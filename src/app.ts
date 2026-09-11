@@ -14,6 +14,10 @@ export function createApp() {
       origin(origin, callback) {
         // allow same-origin/non-browser callers (curl, server-side fetch)
         if (!origin) return callback(null, true);
+        // in development the app is opened from phones and other PCs on the
+        // LAN whose origins can't be listed ahead of time; production keeps
+        // the explicit allow-list
+        if (!env.isProduction) return callback(null, true);
         if (env.corsOrigins.includes(origin)) return callback(null, true);
         return callback(new Error(`Origin ${origin} is not allowed by CORS`));
       },
