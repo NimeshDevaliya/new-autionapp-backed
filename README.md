@@ -47,9 +47,14 @@ npm run seed             # only seeds an empty database
 npm run seed -- --force  # wipes and reseeds
 ```
 
-Creates two admins, two tournament seasons, nine teams, 32 players, a completed
-auction with bid history, a draft auction ready to run, and six matches with
-full scorecards.
+Loads the league's real data: all four MedianV Premier League seasons, the six
+Season 4 franchises with their logos, colours and 2 Cr purses, 76 registered
+players, every squad with sold prices and captain/vice-captain flags, and the
+completed Season 4 auction record. Eleven players are registered without a team
+and can be picked up in a future auction.
+
+No match scorecards are seeded, so statistics stay empty until real results
+are entered — nothing is invented.
 
 | Role | Email | Password |
 | --- | --- | --- |

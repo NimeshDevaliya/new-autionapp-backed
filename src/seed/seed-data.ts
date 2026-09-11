@@ -1,4 +1,3 @@
-import mongoose from "mongoose";
 import { Admin } from "../models/Admin";
 import { Tournament } from "../models/Tournament";
 import { Team } from "../models/Team";
@@ -11,53 +10,183 @@ import { Match } from "../models/Match";
 import { Innings } from "../models/Innings";
 import { BattingScore } from "../models/BattingScore";
 import { BowlingFigure } from "../models/BowlingFigure";
-import { PlayerRole } from "../types/enums";
-
-const TEAM_SEED = [
-  { name: "Royal Vikings", shortName: "RV", ownerName: "A. Mehta", color: "#0754cf" },
-  { name: "Storm Breakers", shortName: "SB", ownerName: "R. Shah", color: "#c80000" },
-  { name: "Western Giants", shortName: "WG", ownerName: "N. Patel", color: "#f59d39" },
-  { name: "Knight Hunters", shortName: "KH", ownerName: "S. Desai", color: "#46acdc" },
-  { name: "Alpha Legends", shortName: "AL", ownerName: "V. Joshi", color: "#fbd12f" },
-];
-
-const FIRST_NAMES = [
-  "Arjun", "Rohan", "Kunal", "Manish", "Vivek", "Harsh", "Nikhil", "Parth",
-  "Dhruv", "Yash", "Karan", "Raj", "Aditya", "Siddharth", "Mihir", "Tejas",
-  "Jay", "Chirag", "Sameer", "Ankit", "Rahul", "Varun", "Neel", "Kartik",
-  "Pranav", "Devansh", "Ishan", "Om",
-];
-const LAST_NAMES = [
-  "Patel", "Shah", "Desai", "Mehta", "Joshi", "Trivedi", "Chauhan", "Solanki",
-  "Rana", "Bhatt", "Parmar", "Vyas", "Gandhi", "Modi",
-];
-
-const ROLES: PlayerRole[] = ["BATTER", "BOWLER", "ALL_ROUNDER", "WICKET_KEEPER"];
-const BATTING_STYLES = ["Right-hand bat", "Left-hand bat"];
-const BOWLING_STYLES = [
-  "Right-arm fast",
-  "Right-arm medium",
-  "Left-arm medium",
-  "Right-arm off-break",
-  "Left-arm orthodox",
-];
-
-/** Deterministic pseudo-random so reseeding produces comparable data. */
-function seededRandom(seed: number) {
-  let value = seed;
-  return () => {
-    value = (value * 1103515245 + 12345) % 2147483648;
-    return value / 2147483648;
-  };
-}
-
-const rand = seededRandom(42);
-const pick = <T,>(arr: T[]): T => arr[Math.floor(rand() * arr.length)];
-const randInt = (min: number, max: number) =>
-  Math.floor(rand() * (max - min + 1)) + min;
 
 /**
- * Populates a database with demo league data.
+ * Real MedianV Premier League data.
+ *
+ * Every price is in lakhs. "RETAINED" players were kept by their team without
+ * going to auction; "UNSOLD" players went to auction unsold but still sit on the
+ * team's list, as the league records them. No match scorecards are seeded —
+ * statistics stay empty until real results are entered, rather than invented.
+ */
+
+const SERIES = "MedianV Premier League";
+const BASE_PRICE = 10;
+/** Alpha Legacy Legends spent exactly 200, which pins the purse at 2 Cr. */
+const TEAM_BUDGET = 200;
+const SQUAD_SIZE = 11;
+
+type SoldValue = number | "RETAINED" | "UNSOLD";
+
+interface SquadRow {
+  name: string;
+  sold: SoldValue;
+  captain?: boolean;
+  viceCaptain?: boolean;
+}
+
+interface TeamSeed {
+  name: string;
+  shortName: string;
+  color: string;
+  logo: string;
+  squad: SquadRow[];
+}
+
+const TEAMS: TeamSeed[] = [
+  {
+    name: "Royal Vikings",
+    shortName: "RV",
+    color: "#f59d39",
+    logo: "/team-logos/royal-vikings.png",
+    squad: [
+      { name: "Akash Patel", sold: 10 },
+      { name: "Dev Vasita", sold: "RETAINED" },
+      { name: "Dishang Chavda", sold: 78 },
+      { name: "Kunal Gajjar", sold: "RETAINED", viceCaptain: true },
+      { name: "Nimesh Devaliya", sold: "RETAINED" },
+      { name: "Pankaj Bhatt", sold: 11 },
+      { name: "Raj Pandey", sold: 13 },
+      { name: "Rohit Prajapati", sold: "RETAINED", captain: true },
+      { name: "Soham Patel", sold: "RETAINED" },
+      { name: "Taher Patwa", sold: 24 },
+    ],
+  },
+  {
+    name: "Storm Breakers",
+    shortName: "SB",
+    color: "#46acdc",
+    logo: "/team-logos/storm-breakers.png",
+    squad: [
+      { name: "Akash Desai", sold: 17 },
+      { name: "Amara Reddy", sold: 10 },
+      { name: "Bhanu Pratap Singh", sold: 22 },
+      { name: "Jatin Panchal", sold: "UNSOLD" },
+      { name: "Jayesh Bhadane", sold: 10 },
+      { name: "Mandeep Singh Bagga", sold: "RETAINED", captain: true },
+      { name: "Meet Patel", sold: 26 },
+      { name: "Prem Darji", sold: 22 },
+      { name: "Rahul Kumar", sold: 10 },
+      { name: "Ritesh Narnaware", sold: "RETAINED", viceCaptain: true },
+      { name: "Vishal Rajpure", sold: 82 },
+    ],
+  },
+  {
+    name: "Game Changers",
+    shortName: "GC",
+    color: "#95aaff",
+    logo: "/team-logos/game-changers.png",
+    squad: [
+      { name: "Chhatrapalsinh Rana", sold: 72 },
+      { name: "Devyang Patel", sold: 10 },
+      { name: "Dhruv Panchal", sold: "RETAINED", viceCaptain: true },
+      { name: "Dinesh Prajapati", sold: "RETAINED", captain: true },
+      { name: "Himanshu Singh", sold: 30 },
+      { name: "Pratik Zajam", sold: 17 },
+      { name: "Rushikesh Gaware", sold: 27 },
+      { name: "Shashank Khede", sold: 12 },
+      { name: "Siddharth Kanzariya", sold: 21 },
+      { name: "Subhankar Guchait", sold: "UNSOLD" },
+      { name: "Vaibhav Bhatt", sold: "RETAINED" },
+    ],
+  },
+  {
+    name: "Knight Hunters",
+    shortName: "KH",
+    color: "#fbd12f",
+    logo: "/team-logos/knight-hunters.png",
+    squad: [
+      { name: "Agman Rajpurohit", sold: "RETAINED", viceCaptain: true },
+      { name: "Akshat Shah", sold: 21 },
+      { name: "Dwanish Patel", sold: 16 },
+      { name: "Harsh Padaliya", sold: 46 },
+      { name: "Pawan Kumar", sold: 23 },
+      { name: "Rahul Rao", sold: 10 },
+      { name: "Ram Pratap", sold: "RETAINED", captain: true },
+      { name: "Sourav Yadav", sold: 21 },
+      { name: "Viraj Singh", sold: 10 },
+      { name: "Vivaan Kumar Pathak", sold: 12 },
+      { name: "Vivek Lakhani", sold: 20 },
+    ],
+  },
+  {
+    name: "Viking Raiders",
+    shortName: "VR",
+    color: "#ffb799",
+    logo: "/team-logos/viking-raiders.png",
+    squad: [
+      { name: "Aayush Pandey", sold: 17 },
+      { name: "Gaurav Sharma", sold: 11 },
+      { name: "Keval Barvaliya", sold: 29 },
+      { name: "Lokesh Sharma", sold: "UNSOLD" },
+      { name: "MD Shadab", sold: "RETAINED", viceCaptain: true },
+      { name: "Meet Soni", sold: 78 },
+      { name: "Sanjay Chary", sold: "UNSOLD" },
+      { name: "Soumen Shit", sold: 29 },
+      { name: "Vishal Mishra", sold: "RETAINED", captain: true },
+      { name: "Vishnu Vardhan", sold: 19 },
+      { name: "Yash Savariya", sold: 10 },
+    ],
+  },
+  {
+    name: "Alpha Legacy Legends",
+    shortName: "ALL",
+    color: "#0754cf",
+    logo: "/team-logos/alpha-legacy-legends.png",
+    squad: [
+      { name: "Abhinav Sumra", sold: "RETAINED", viceCaptain: true },
+      { name: "Arvind Rajput", sold: 10 },
+      { name: "Ayush Patel", sold: 11 },
+      { name: "Himanshu Pradhan", sold: 32 },
+      { name: "Manav Jakhaniya", sold: "UNSOLD" },
+      { name: "Pratik Vinayak Patil", sold: 15 },
+      { name: "Raj Keshkar", sold: 84 },
+      { name: "Ritesh Kushvah", sold: "RETAINED", captain: true },
+      { name: "Sagar Kumar", sold: 17 },
+      { name: "Vishal Panchal", sold: 10 },
+      { name: "Vraj Parikh", sold: 21 },
+    ],
+  },
+];
+
+/**
+ * Western Giants is not fielding a team, so its players are registered without
+ * a squad — available to be picked up in a future auction.
+ */
+const FREE_AGENTS: string[] = [
+  "Avi Patel",
+  "Brijesh Sangani",
+  "Harendrasingh Negi",
+  "Harsh Raj",
+  "Niraj Chander",
+  "Pradeep Upadhyay",
+  "Rahul Pratap Singh",
+  "Ronak Chauhan",
+  "Roshan Kumar Bhagat",
+  "Saksham Jain",
+  "Yagnesh Shiroya",
+];
+
+/** Every edition of the league so far, from the public fixture record. */
+const SEASONS = [
+  { number: 1, start: "2024-01-11", end: "2024-05-02", status: "COMPLETED" },
+  { number: 2, start: "2024-07-24", end: "2025-05-26", status: "COMPLETED" },
+  { number: 3, start: "2025-09-09", end: "2026-01-29", status: "COMPLETED" },
+  { number: 4, start: "2026-05-06", end: "2027-03-31", status: "ONGOING" },
+] as const;
+
+/**
+ * Populates a database with the league's real teams and players.
  *
  * Existing data is left alone unless `force` is set, so this can never quietly
  * overwrite real records.
@@ -111,316 +240,133 @@ export async function runSeed({ force = false }: { force?: boolean } = {}) {
   console.log("[seed] admins created");
 
   /* -------------------------------------------------------- tournaments -- */
-  const series = "MedianV Premier League";
-
-  const pastTournament = await Tournament.create({
-    name: `${series} Season 3`,
-    shortName: "MPL S3",
-    seriesName: series,
-    seasonName: "Season 3",
-    seasonNumber: 3,
-    startDate: new Date("2025-09-09"),
-    endDate: new Date("2026-01-29"),
-    location: "Ahmedabad",
-    status: "COMPLETED",
-    description: "Third season of the MedianV Premier League.",
-    createdBy: superAdmin._id,
-  });
-
-  const currentTournament = await Tournament.create({
-    name: `${series} Season 4`,
-    shortName: "MPL S4",
-    seriesName: series,
-    seasonName: "Season 4",
-    seasonNumber: 4,
-    startDate: new Date("2026-05-06"),
-    endDate: new Date("2027-03-31"),
-    location: "Ahmedabad",
-    status: "ONGOING",
-    description: "The ongoing fourth season of the MedianV Premier League.",
-    createdBy: superAdmin._id,
-  });
-  console.log("[seed] tournaments created");
+  const tournaments = await Tournament.create(
+    SEASONS.map((season) => ({
+      name: `${SERIES} Season ${season.number}`,
+      shortName: `MPL S${season.number}`,
+      seriesName: SERIES,
+      seasonName: `Season ${season.number}`,
+      seasonNumber: season.number,
+      startDate: new Date(season.start),
+      endDate: new Date(season.end),
+      location: "Ahmedabad",
+      status: season.status,
+      createdBy: superAdmin._id,
+    }))
+  );
+  const currentTournament = tournaments.find((t) => t.status === "ONGOING")!;
+  console.log(`[seed] ${tournaments.length} seasons created`);
 
   /* --------------------------------------------------------------- teams -- */
-  const teams = await Team.create(
-    TEAM_SEED.map((team) => ({
-      ...team,
-      budget: 120,
-      spent: 0,
-      maxPlayers: 11,
+  const teamDocs = await Team.create(
+    TEAMS.map((team) => ({
+      name: team.name,
+      shortName: team.shortName,
+      color: team.color,
+      logo: team.logo,
+      budget: TEAM_BUDGET,
+      spent: team.squad.reduce(
+        (sum, row) => sum + (typeof row.sold === "number" ? row.sold : 0),
+        0
+      ),
+      maxPlayers: SQUAD_SIZE,
       minPlayers: 7,
       status: "ACTIVE",
       tournament: currentTournament._id,
       createdBy: superAdmin._id,
     }))
   );
-
-  const pastTeams = await Team.create(
-    TEAM_SEED.slice(0, 4).map((team) => ({
-      ...team,
-      budget: 100,
-      spent: 0,
-      maxPlayers: 11,
-      minPlayers: 7,
-      status: "ACTIVE",
-      tournament: pastTournament._id,
-      createdBy: superAdmin._id,
-    }))
-  );
-  console.log(`[seed] ${teams.length + pastTeams.length} teams created`);
+  const teamByName = new Map(teamDocs.map((t) => [t.name, t]));
+  console.log(`[seed] ${teamDocs.length} teams created`);
 
   /* ------------------------------------------------------------- players -- */
-  const usedNames = new Set<string>();
-  const playerDocs = [];
+  const allNames = [
+    ...TEAMS.flatMap((team) => team.squad.map((row) => row.name)),
+    ...FREE_AGENTS,
+  ];
 
-  for (let i = 0; i < 32; i += 1) {
-    let fullName = `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`;
-    let guard = 0;
-    while (usedNames.has(fullName) && guard < 50) {
-      fullName = `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`;
-      guard += 1;
-    }
-    usedNames.add(fullName);
-
-    const role = ROLES[i % ROLES.length];
-    playerDocs.push({
+  const playerDocs = await Player.create(
+    allNames.map((fullName) => ({
       fullName,
-      role,
-      category: rand() > 0.85 ? "INTERNATIONAL" : "LOCAL",
-      battingStyle: pick(BATTING_STYLES),
-      bowlingStyle: role === "BATTER" ? undefined : pick(BOWLING_STYLES),
-      basePrice: [2, 4, 6, 8, 10][randInt(0, 4)],
-      dateOfBirth: new Date(randInt(1990, 2004), randInt(0, 11), randInt(1, 28)),
+      role: "ALL_ROUNDER",
+      category: "LOCAL",
+      basePrice: BASE_PRICE,
       isActive: true,
       createdBy: superAdmin._id,
-    });
-  }
-
-  const players = await Player.create(playerDocs);
-  console.log(`[seed] ${players.length} players created`);
-
-  /* ------------------------------------------------------------ auctions -- */
-  const auction = await Auction.create({
-    name: `${series} Season 4 Auction`,
-    tournament: currentTournament._id,
-    status: "DRAFT",
-    bidIncrementTiers: [
-      { threshold: 0, increment: 1 },
-      { threshold: 40, increment: 2 },
-    ],
-    maxSquadSize: 11,
-    minSquadSize: 7,
-    timerSeconds: 30,
-    createdBy: superAdmin._id,
-  });
-
-  // queue every player for the live auction
-  await AuctionPlayer.insertMany(
-    players.map((player, index) => ({
-      auction: auction._id,
-      player: player._id,
-      basePrice: player.basePrice,
-      order: index + 1,
-      status: "PENDING",
     }))
   );
-  console.log(`[seed] auction created with ${players.length} players queued`);
+  const playerByName = new Map(playerDocs.map((p) => [p.fullName, p]));
+  console.log(
+    `[seed] ${playerDocs.length} players created (${FREE_AGENTS.length} without a team)`
+  );
 
-  /* ------------------------- completed past auction, squads and results -- */
-  const pastAuction = await Auction.create({
-    name: `${series} Season 3 Auction`,
-    tournament: pastTournament._id,
+  /* ------------------------------------------ the season's auction record -- */
+  const auction = await Auction.create({
+    name: `${SERIES} Season 4 Auction`,
+    tournament: currentTournament._id,
     status: "COMPLETED",
     bidIncrementTiers: [
       { threshold: 0, increment: 1 },
       { threshold: 40, increment: 2 },
     ],
-    maxSquadSize: 11,
+    maxSquadSize: SQUAD_SIZE,
     minSquadSize: 7,
-    startedAt: new Date("2025-09-01"),
-    completedAt: new Date("2025-09-02"),
+    startedAt: new Date(currentTournament.startDate!.getTime() - 14 * 86_400_000),
+    completedAt: new Date(currentTournament.startDate!.getTime() - 14 * 86_400_000),
     createdBy: superAdmin._id,
   });
 
-  // sell the first 24 players across the four past-season teams
-  const soldPlayers = players.slice(0, 24);
+  /* ------------------------------------------------ squads and outcomes -- */
   const squadEntries = [];
-  const auctionPlayerEntries = [];
-  const bidEntries = [];
-  const teamSpend = new Map<string, number>();
+  const auctionEntries = [];
+  let order = 1;
 
-  for (let i = 0; i < soldPlayers.length; i += 1) {
-    const player = soldPlayers[i];
-    const team = pastTeams[i % pastTeams.length];
-    const soldPrice = player.basePrice + randInt(0, 6);
+  for (const team of TEAMS) {
+    const teamDoc = teamByName.get(team.name)!;
 
-    const auctionPlayerId = new mongoose.Types.ObjectId();
-    auctionPlayerEntries.push({
-      _id: auctionPlayerId,
-      auction: pastAuction._id,
-      player: player._id,
-      basePrice: player.basePrice,
-      currentBid: soldPrice,
-      status: "SOLD",
-      soldPrice,
-      soldToTeam: team._id,
-      order: i + 1,
-      soldAt: new Date("2025-09-02"),
-    });
+    for (const row of team.squad) {
+      const player = playerByName.get(row.name)!;
+      const retained = row.sold === "RETAINED";
+      const soldPrice = typeof row.sold === "number" ? row.sold : 0;
 
-    // a couple of bids of history leading to the sale
-    let running = player.basePrice;
-    bidEntries.push({
-      auction: pastAuction._id,
-      auctionPlayer: auctionPlayerId,
-      team: pastTeams[(i + 1) % pastTeams.length]._id,
-      amount: running,
-      placedBy: superAdmin._id,
-    });
-    while (running < soldPrice) {
-      running += running >= 40 ? 2 : 1;
-      bidEntries.push({
-        auction: pastAuction._id,
-        auctionPlayer: auctionPlayerId,
-        team: team._id,
-        amount: Math.min(running, soldPrice),
-        placedBy: superAdmin._id,
-      });
-    }
-
-    squadEntries.push({
-      tournament: pastTournament._id,
-      team: team._id,
-      player: player._id,
-      basePrice: player.basePrice,
-      soldPrice,
-      acquisitionType: "AUCTION",
-      auction: pastAuction._id,
-      isCaptain: i < pastTeams.length,
-    });
-
-    teamSpend.set(
-      String(team._id),
-      (teamSpend.get(String(team._id)) ?? 0) + soldPrice
-    );
-  }
-
-  await AuctionPlayer.insertMany(auctionPlayerEntries);
-  await Bid.insertMany(bidEntries);
-  await TeamSquad.insertMany(squadEntries);
-
-  await Promise.all(
-    pastTeams.map((team) =>
-      Team.updateOne(
-        { _id: team._id },
-        { $set: { spent: teamSpend.get(String(team._id)) ?? 0 } }
-      )
-    )
-  );
-  console.log(`[seed] past auction settled: ${soldPlayers.length} players sold`);
-
-  /* -------------------------------------------- matches and scorecards -- */
-  const squadsByTeam = new Map<string, typeof squadEntries>();
-  for (const entry of squadEntries) {
-    const key = String(entry.team);
-    squadsByTeam.set(key, [...(squadsByTeam.get(key) ?? []), entry]);
-  }
-
-  let matchNumber = 1;
-  for (let i = 0; i < pastTeams.length; i += 1) {
-    for (let j = i + 1; j < pastTeams.length; j += 1) {
-      const teamA = pastTeams[i];
-      const teamB = pastTeams[j];
-      const winner = rand() > 0.5 ? teamA : teamB;
-
-      const match = await Match.create({
-        tournament: pastTournament._id,
-        matchNumber: matchNumber++,
-        teamA: teamA._id,
-        teamB: teamB._id,
-        matchDate: new Date(2025, 9, matchNumber),
-        venue: "MedianV Ground, Ahmedabad",
-        status: "COMPLETED",
-        winner: winner._id,
-        result: `${winner.name} won`,
-        overs: 20,
+      squadEntries.push({
+        tournament: currentTournament._id,
+        team: teamDoc._id,
+        player: player._id,
+        basePrice: retained ? 0 : BASE_PRICE,
+        soldPrice,
+        acquisitionType: retained ? "RETAINED" : "AUCTION",
+        auction: retained ? null : auction._id,
+        isCaptain: row.captain ?? false,
+        isViceCaptain: row.viceCaptain ?? false,
       });
 
-      for (const [inningsNumber, [batTeam, bowlTeam]] of [
-        [teamA, teamB],
-        [teamB, teamA],
-      ].entries()) {
-        const batSquad = squadsByTeam.get(String(batTeam._id)) ?? [];
-        const bowlSquad = squadsByTeam.get(String(bowlTeam._id)) ?? [];
-        if (!batSquad.length || !bowlSquad.length) continue;
-
-        const battingRows = batSquad.slice(0, 6).map((entry, index) => {
-          const runs = randInt(0, 75);
-          const balls = Math.max(1, runs > 0 ? randInt(Math.ceil(runs / 2), runs + 12) : randInt(1, 8));
-          const isOut = rand() > 0.25;
-          const fielder = isOut ? pick(bowlSquad) : null;
-          return {
-            player: entry.player,
-            runs,
-            balls,
-            fours: Math.floor(runs / 12),
-            sixes: Math.floor(runs / 25),
-            isOut,
-            dismissalType: isOut ? (pick(["BOWLED", "CAUGHT", "LBW", "RUN_OUT"]) as string) : "NOT_OUT",
-            dismissalBowler: isOut ? pick(bowlSquad).player : null,
-            dismissalFielder: fielder ? fielder.player : null,
-            battingPosition: index + 1,
-          };
+      // retained players never went under the hammer, so they have no auction record
+      if (!retained) {
+        auctionEntries.push({
+          auction: auction._id,
+          player: player._id,
+          basePrice: BASE_PRICE,
+          currentBid: soldPrice,
+          status: row.sold === "UNSOLD" ? "UNSOLD" : "SOLD",
+          soldPrice: row.sold === "UNSOLD" ? null : soldPrice,
+          soldToTeam: row.sold === "UNSOLD" ? null : teamDoc._id,
+          order: order++,
+          soldAt: row.sold === "UNSOLD" ? undefined : auction.completedAt,
         });
-
-        const totalRuns = battingRows.reduce((sum, r) => sum + r.runs, 0);
-        const wickets = battingRows.filter((r) => r.isOut).length;
-
-        const innings = await Innings.create({
-          match: match._id,
-          tournament: pastTournament._id,
-          battingTeam: batTeam._id,
-          bowlingTeam: bowlTeam._id,
-          inningsNumber: inningsNumber + 1,
-          totalRuns,
-          totalWickets: wickets,
-          totalOvers: 20,
-          extras: randInt(2, 12),
-        });
-
-        await BattingScore.insertMany(
-          battingRows.map((row) => ({
-            ...row,
-            innings: innings._id,
-            match: match._id,
-            tournament: pastTournament._id,
-            team: batTeam._id,
-          }))
-        );
-
-        await BowlingFigure.insertMany(
-          bowlSquad.slice(0, 4).map((entry) => {
-            const overs = 4;
-            return {
-              innings: innings._id,
-              match: match._id,
-              tournament: pastTournament._id,
-              player: entry.player,
-              team: bowlTeam._id,
-              overs,
-              maidens: rand() > 0.8 ? 1 : 0,
-              runsConceded: randInt(15, 45),
-              wickets: randInt(0, 3),
-              wides: randInt(0, 4),
-              noBalls: randInt(0, 2),
-            };
-          })
-        );
       }
     }
   }
-  console.log(`[seed] ${matchNumber - 1} matches with scorecards created`);
+
+  await TeamSquad.insertMany(squadEntries);
+  await AuctionPlayer.insertMany(auctionEntries);
+
+  const sold = auctionEntries.filter((e) => e.status === "SOLD").length;
+  const unsold = auctionEntries.length - sold;
+  const retained = squadEntries.length - auctionEntries.length;
+  console.log(
+    `[seed] squads filled: ${sold} sold, ${unsold} unsold, ${retained} retained`
+  );
 
   console.log("\n=== Seed complete ===");
   console.log("Super admin:      admin@medianv.com / Admin@12345");
