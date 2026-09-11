@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+
+# env files — real values stay local, the template is committed
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store
