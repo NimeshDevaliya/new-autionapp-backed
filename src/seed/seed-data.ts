@@ -179,10 +179,11 @@ const FREE_AGENTS: string[] = [
 
 /** Every edition of the league so far, from the public fixture record. */
 const SEASONS = [
-  { number: 1, start: "2024-01-11", end: "2024-05-02", status: "COMPLETED" },
-  { number: 2, start: "2024-07-24", end: "2025-05-26", status: "COMPLETED" },
-  { number: 3, start: "2025-09-09", end: "2026-01-29", status: "COMPLETED" },
-  { number: 4, start: "2026-05-06", end: "2027-03-31", status: "ONGOING" },
+  { number: 1, start: "2024-01-11", end: "2024-05-02", status: "COMPLETED", externalId: undefined },
+  { number: 2, start: "2024-07-24", end: "2025-05-26", status: "COMPLETED", externalId: undefined },
+  { number: 3, start: "2025-09-09", end: "2026-01-29", status: "COMPLETED", externalId: undefined },
+  /** Season 4 is scored on CricHeroes; its id lets results sync without typing it in. */
+  { number: 4, start: "2026-05-06", end: "2027-03-31", status: "ONGOING", externalId: 2000875 },
 ] as const;
 
 /**
@@ -251,6 +252,7 @@ export async function runSeed({ force = false }: { force?: boolean } = {}) {
       endDate: new Date(season.end),
       location: "Ahmedabad",
       status: season.status,
+      externalId: season.externalId,
       createdBy: superAdmin._id,
     }))
   );

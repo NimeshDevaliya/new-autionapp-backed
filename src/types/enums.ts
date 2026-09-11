@@ -57,6 +57,8 @@ export const DISMISSAL_TYPES = [
   "STUMPED",
   "HIT_WICKET",
   "RETIRED_HURT",
+  /** rare modes — obstructing the field, hit the ball twice, timed out, retired out */
+  "OTHER",
 ] as const;
 export type DismissalType = (typeof DISMISSAL_TYPES)[number];
 

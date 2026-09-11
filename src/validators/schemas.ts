@@ -73,6 +73,11 @@ export const tournamentListQuery = listQuery.extend({
   seriesName: z.string().trim().optional(),
 });
 
+export const importCricheroesSchema = z.object({
+  externalTournamentId: z.coerce.number().int().positive().optional(),
+  refresh: z.boolean().optional(),
+});
+
 /* --------------------------------------------------------------- teams --- */
 
 export const createTeamSchema = z.object({

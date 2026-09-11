@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "seed": "tsx src/seed/seed.ts",
+    "import:cricheroes": "tsx src/seed/import-cricheroes.ts",
     "test": "tsx --test src/__tests__/*.test.ts",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit"

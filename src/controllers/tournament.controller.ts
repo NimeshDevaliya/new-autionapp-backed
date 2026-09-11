@@ -14,6 +14,7 @@ import {
 import { asyncHandler } from "../utils/asyncHandler";
 import { buildSort } from "../validators/common";
 import { getTournamentStatistics } from "../services/statistics.service";
+import { importTournamentFromCricHeroes } from "../services/cricheroes.service";
 
 const SORTABLE = ["name", "startDate", "endDate", "status", "createdAt"];
 
@@ -138,6 +139,29 @@ export const deleteTournament = asyncHandler(async (req: Request, res: Response)
 
   await tournament.deleteOne();
   return sendSuccess(res, null, "Tournament deleted successfully");
+});
+
+/**
+ * Pulls matches, scorecards and standings from CricHeroes. Long-running (one
+ * request per match), so the response carries a full report of what happened.
+ */
+export const importFromCricHeroes = asyncHandler(async (req: Request, res: Response) => {
+  const report = await importTournamentFromCricHeroes({
+    tournamentId: req.params.id,
+    externalTournamentId: req.body.externalTournamentId,
+    refresh: req.body.refresh,
+    createdBy: req.admin!.id,
+  });
+
+  const failed = report.matches.failed.length;
+  const summary =
+    failed > 0
+      ? `Imported ${report.matches.imported} of ${report.matches.found} matches — ${failed} failed`
+      : report.matches.imported > 0
+        ? `Imported ${report.matches.imported} match${report.matches.imported === 1 ? "" : "es"} from CricHeroes`
+        : "Already up to date with CricHeroes";
+
+  return sendSuccess(res, report, summary);
 });
 
 export const setTournamentStatus = (status: "ONGOING" | "COMPLETED") =>

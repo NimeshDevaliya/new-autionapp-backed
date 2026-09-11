@@ -6,6 +6,7 @@ import { validate } from "../middleware/validate";
 import { idParam } from "../validators/common";
 import {
   createTournamentSchema,
+  importCricheroesSchema,
   tournamentListQuery,
   updateTournamentSchema,
 } from "../validators/schemas";
@@ -57,6 +58,13 @@ router.post(
   authenticate,
   validate(idParam, "params"),
   tournamentController.setTournamentStatus("COMPLETED")
+);
+router.post(
+  "/:id/import-cricheroes",
+  authenticate,
+  validate(idParam, "params"),
+  validate(importCricheroesSchema),
+  tournamentController.importFromCricHeroes
 );
 
 export default router;

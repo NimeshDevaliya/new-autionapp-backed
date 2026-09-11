@@ -3,9 +3,13 @@ import { Types } from "mongoose";
 import { sendSuccess } from "../utils/apiResponse";
 import { asyncHandler } from "../utils/asyncHandler";
 import {
+  ALL_ROUNDER_WICKET_WEIGHT,
+  allRounderLeaderboard,
+  battingLeaderboard,
+  bowlingLeaderboard,
+  fieldingLeaderboard,
   getDashboardStatistics,
   getPointsTable,
-  leaderboard,
 } from "../services/statistics.service";
 
 export const getDashboard = asyncHandler(async (_req: Request, res: Response) => {
@@ -18,14 +22,23 @@ export const getLeaderboards = asyncHandler(async (req: Request, res: Response) 
   const tournamentId = tournament ? new Types.ObjectId(tournament) : undefined;
   const max = limit ? Number(limit) : 10;
 
-  const [topRunScorers, topWicketTakers] = await Promise.all([
-    leaderboard("runs", tournamentId, max),
-    leaderboard("wickets", tournamentId, max),
-  ]);
+  const [topRunScorers, topWicketTakers, topAllRounders, topFielders] =
+    await Promise.all([
+      battingLeaderboard(tournamentId, max),
+      bowlingLeaderboard(tournamentId, max),
+      allRounderLeaderboard(tournamentId, max),
+      fieldingLeaderboard(tournamentId, max),
+    ]);
 
   return sendSuccess(
     res,
-    { topRunScorers, topWicketTakers },
+    {
+      allRounderWicketWeight: ALL_ROUNDER_WICKET_WEIGHT,
+      topRunScorers,
+      topWicketTakers,
+      topAllRounders,
+      topFielders,
+    },
     "Leaderboards loaded"
   );
 });

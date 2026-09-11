@@ -12,6 +12,8 @@ export interface IInnings extends Document {
   /** Overs bowled, as a decimal where .1-.5 are balls (cricket notation). */
   totalOvers: number;
   extras: number;
+  /** An all-out side is charged its full quota of overs when net run rate is worked out. */
+  allOut: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -32,6 +34,7 @@ const inningsSchema = new Schema<IInnings>(
     totalWickets: { type: Number, default: 0, min: 0 },
     totalOvers: { type: Number, default: 0, min: 0 },
     extras: { type: Number, default: 0, min: 0 },
+    allOut: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

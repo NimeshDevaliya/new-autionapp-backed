@@ -20,6 +20,8 @@ export interface ITournament extends Document {
   location?: string;
   status: TournamentStatus;
   description?: string;
+  /** Tournament id in the scoring system the league records matches on (CricHeroes). */
+  externalId?: number;
   createdBy?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
@@ -43,6 +45,7 @@ const tournamentSchema = new Schema<ITournament>(
       index: true,
     },
     description: { type: String },
+    externalId: { type: Number, index: true, unique: true, sparse: true },
     createdBy: { type: Schema.Types.ObjectId, ref: "Admin" },
   },
   { timestamps: true }

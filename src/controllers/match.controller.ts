@@ -27,6 +27,7 @@ export const listMatches = asyncHandler(async (req: Request, res: Response) => {
       .populate("teamA", "name shortName logo color")
       .populate("teamB", "name shortName logo color")
       .populate("winner", "name shortName")
+      .populate("playerOfTheMatch", "fullName profileImage")
       .populate("tournament", "name shortName")
       .sort({ matchDate: -1, matchNumber: -1 })
       .skip(skip)
@@ -35,9 +36,32 @@ export const listMatches = asyncHandler(async (req: Request, res: Response) => {
     Match.countDocuments(filter),
   ]);
 
+  // attach each side's score so the list can read like a results page
+  const innings = await Innings.find({ match: { $in: matches.map((m) => m._id) } })
+    .select("match battingTeam inningsNumber totalRuns totalWickets totalOvers allOut")
+    .sort({ inningsNumber: 1 })
+    .lean();
+  const byMatch = new Map<string, typeof innings>();
+  for (const inn of innings) {
+    const key = String(inn.match);
+    byMatch.set(key, [...(byMatch.get(key) ?? []), inn]);
+  }
+
+  const data = matches.map((m) => ({
+    ...m,
+    innings: (byMatch.get(String(m._id)) ?? []).map((inn) => ({
+      team: inn.battingTeam,
+      inningsNumber: inn.inningsNumber,
+      runs: inn.totalRuns,
+      wickets: inn.totalWickets,
+      overs: inn.totalOvers,
+      allOut: inn.allOut,
+    })),
+  }));
+
   return sendSuccess(
     res,
-    matches,
+    data,
     "Matches loaded",
     200,
     buildPaginationMeta(page, limit, total)
@@ -49,6 +73,8 @@ export const getMatch = asyncHandler(async (req: Request, res: Response) => {
     .populate("teamA", "name shortName logo color")
     .populate("teamB", "name shortName logo color")
     .populate("winner", "name shortName")
+    .populate("tossWonBy", "name shortName")
+    .populate("playerOfTheMatch", "fullName profileImage role")
     .populate("tournament", "name shortName")
     .lean();
   if (!match) throw ApiError.notFound("Match not found");
@@ -173,7 +199,7 @@ export const recordInnings = asyncHandler(async (req: Request, res: Response) =>
             tournament: match.tournament,
             team: battingTeam,
           })),
-          { session }
+          { session, ordered: true }
         );
       }
 
@@ -186,7 +212,7 @@ export const recordInnings = asyncHandler(async (req: Request, res: Response) =>
             tournament: match.tournament,
             team: bowlingTeam,
           })),
-          { session }
+          { session, ordered: true }
         );
       }
     });

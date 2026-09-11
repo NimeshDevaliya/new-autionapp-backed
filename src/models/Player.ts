@@ -24,6 +24,10 @@ export interface IPlayer extends Document {
   isActive: boolean;
   /** Optional external cricket profile link (carried over from the previous system). */
   externalProfileUrl?: string;
+  /** Player id in the scoring system the league records matches on (CricHeroes). */
+  externalId?: number;
+  /** Further CricHeroes ids that turned out to be the same person (duplicate profiles). */
+  externalAliases: number[];
   createdBy?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
@@ -41,6 +45,8 @@ const playerSchema = new Schema<IPlayer>(
     basePrice: { type: Number, required: true, min: 0 },
     isActive: { type: Boolean, default: true, index: true },
     externalProfileUrl: { type: String },
+    externalId: { type: Number, index: true, unique: true, sparse: true },
+    externalAliases: { type: [Number], default: [], index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: "Admin" },
   },
   { timestamps: true }

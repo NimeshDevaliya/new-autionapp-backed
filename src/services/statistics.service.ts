@@ -1,6 +1,7 @@
 import { PipelineStage, Types } from "mongoose";
 import { BattingScore } from "../models/BattingScore";
 import { BowlingFigure } from "../models/BowlingFigure";
+import { Innings } from "../models/Innings";
 import { Match } from "../models/Match";
 import { Team } from "../models/Team";
 import { TeamSquad } from "../models/TeamSquad";
@@ -27,6 +28,27 @@ function round(value: number, places = 2): number {
   if (!Number.isFinite(value)) return 0;
   return Number(value.toFixed(places));
 }
+
+/**
+ * Aggregation expression turning stored over notation into balls, so bowling
+ * totals can be summed inside MongoDB without a JS round trip.
+ */
+const BALLS_EXPR = {
+  $add: [
+    { $multiply: [{ $floor: "$overs" }, 6] },
+    { $round: [{ $multiply: [{ $subtract: ["$overs", { $floor: "$overs" }] }, 10] }, 0] },
+  ],
+};
+
+/** Points scheme. Wins are worth two, ties one; the league can add adjustments per team. */
+const POINTS_FOR_WIN = 2;
+const POINTS_FOR_TIE = 1;
+
+/**
+ * Weight of a wicket when ranking all-rounders. Stated in the API response and
+ * shown in the UI so the ranking is transparent rather than a black box.
+ */
+export const ALL_ROUNDER_WICKET_WEIGHT = 20;
 
 export interface BattingStats {
   matches: number;
@@ -251,20 +273,433 @@ export async function getPlayerSeasonStatistics(playerId: string) {
   );
 }
 
+/* -------------------------------------------------------- leaderboards --- */
+
+interface PlayerSummary {
+  _id: Types.ObjectId;
+  fullName: string;
+  profileImage?: string;
+  role: string;
+}
+
+interface TeamSummary {
+  _id: Types.ObjectId;
+  name: string;
+  shortName?: string;
+  logo?: string;
+  color?: string;
+}
+
+/** Attaches player details and the team each player most recently played for. */
+async function withPlayerAndTeam<T extends { _id: unknown; teamIds?: unknown[] }>(
+  rows: T[]
+): Promise<Array<T & { player: PlayerSummary | null; team: TeamSummary | null }>> {
+  const playerIds = rows.map((r) => r._id);
+  const teamIds = Array.from(
+    new Set(rows.flatMap((r) => (r.teamIds ?? []).map(String)))
+  );
+
+  const [players, teams] = await Promise.all([
+    Player.find({ _id: { $in: playerIds } })
+      .select("fullName profileImage role")
+      .lean<PlayerSummary[]>(),
+    Team.find({ _id: { $in: teamIds } })
+      .select("name shortName logo color")
+      .lean<TeamSummary[]>(),
+  ]);
+
+  const playerMap = new Map(players.map((p) => [String(p._id), p]));
+  const teamMap = new Map(teams.map((t) => [String(t._id), t]));
+
+  return rows.map((row) => {
+    const lastTeam = row.teamIds?.length ? row.teamIds[row.teamIds.length - 1] : null;
+    const { teamIds: _teamIds, ...rest } = row;
+    return {
+      ...(rest as T),
+      player: playerMap.get(String(row._id)) ?? null,
+      team: lastTeam ? teamMap.get(String(lastTeam)) ?? null : null,
+    };
+  });
+}
+
+export interface BattingLeaderboardEntry {
+  _id: Types.ObjectId;
+  player: PlayerSummary | null;
+  team: TeamSummary | null;
+  matches: number;
+  innings: number;
+  runs: number;
+  balls: number;
+  notOuts: number;
+  highestScore: number;
+  /** null when the player has never been dismissed */
+  average: number | null;
+  strikeRate: number;
+  fours: number;
+  sixes: number;
+  fifties: number;
+  hundreds: number;
+}
+
+export async function battingLeaderboard(
+  tournamentId?: Types.ObjectId,
+  limit = 10
+): Promise<BattingLeaderboardEntry[]> {
+  const match: Record<string, unknown> = {};
+  if (tournamentId) match.tournament = tournamentId;
+
+  const pipeline: PipelineStage[] = [
+    { $match: match },
+    { $sort: { createdAt: 1 } },
+    {
+      $group: {
+        _id: "$player",
+        matchIds: { $addToSet: "$match" },
+        teamIds: { $push: "$team" },
+        innings: { $sum: 1 },
+        runs: { $sum: "$runs" },
+        balls: { $sum: "$balls" },
+        notOuts: { $sum: { $cond: [{ $eq: ["$isOut", false] }, 1, 0] } },
+        highestScore: { $max: "$runs" },
+        fours: { $sum: "$fours" },
+        sixes: { $sum: "$sixes" },
+        fifties: {
+          $sum: {
+            $cond: [{ $and: [{ $gte: ["$runs", 50] }, { $lt: ["$runs", 100] }] }, 1, 0],
+          },
+        },
+        hundreds: { $sum: { $cond: [{ $gte: ["$runs", 100] }, 1, 0] } },
+      },
+    },
+    { $sort: { runs: -1, balls: 1 } },
+    { $limit: limit },
+  ];
+
+  const rows = await BattingScore.aggregate(pipeline);
+  const enriched = await withPlayerAndTeam(rows);
+
+  return enriched.map((r) => {
+    const dismissals = r.innings - r.notOuts;
+    return {
+      _id: r._id,
+      player: r.player,
+      team: r.team,
+      matches: r.matchIds.length,
+      innings: r.innings,
+      runs: r.runs,
+      balls: r.balls,
+      notOuts: r.notOuts,
+      highestScore: r.highestScore,
+      average: dismissals > 0 ? round(r.runs / dismissals) : null,
+      strikeRate: r.balls > 0 ? round((r.runs / r.balls) * 100) : 0,
+      fours: r.fours,
+      sixes: r.sixes,
+      fifties: r.fifties,
+      hundreds: r.hundreds,
+    };
+  });
+}
+
+export interface BowlingLeaderboardEntry {
+  _id: Types.ObjectId;
+  player: PlayerSummary | null;
+  team: TeamSummary | null;
+  matches: number;
+  innings: number;
+  balls: number;
+  overs: number;
+  maidens: number;
+  runsConceded: number;
+  wickets: number;
+  economy: number;
+  /** null when the player has no wickets */
+  average: number | null;
+  strikeRate: number | null;
+  bestBowling: string;
+}
+
+export async function bowlingLeaderboard(
+  tournamentId?: Types.ObjectId,
+  limit = 10
+): Promise<BowlingLeaderboardEntry[]> {
+  const match: Record<string, unknown> = {};
+  if (tournamentId) match.tournament = tournamentId;
+
+  const pipeline: PipelineStage[] = [
+    { $match: match },
+    { $sort: { createdAt: 1 } },
+    {
+      $group: {
+        _id: "$player",
+        matchIds: { $addToSet: "$match" },
+        teamIds: { $push: "$team" },
+        innings: { $sum: 1 },
+        balls: { $sum: BALLS_EXPR },
+        maidens: { $sum: "$maidens" },
+        runsConceded: { $sum: "$runsConceded" },
+        wickets: { $sum: "$wickets" },
+        spells: { $push: { w: "$wickets", r: "$runsConceded" } },
+      },
+    },
+    { $sort: { wickets: -1, runsConceded: 1 } },
+    { $limit: limit },
+  ];
+
+  const rows = await BowlingFigure.aggregate(pipeline);
+  const enriched = await withPlayerAndTeam(rows);
+
+  return enriched.map((r) => {
+    let best: { w: number; r: number } | null = null;
+    for (const spell of r.spells as Array<{ w: number; r: number }>) {
+      if (!best || spell.w > best.w || (spell.w === best.w && spell.r < best.r)) {
+        best = spell;
+      }
+    }
+    return {
+      _id: r._id,
+      player: r.player,
+      team: r.team,
+      matches: r.matchIds.length,
+      innings: r.innings,
+      balls: r.balls,
+      overs: ballsToOvers(r.balls),
+      maidens: r.maidens,
+      runsConceded: r.runsConceded,
+      wickets: r.wickets,
+      economy: r.balls > 0 ? round(r.runsConceded / (r.balls / 6)) : 0,
+      average: r.wickets > 0 ? round(r.runsConceded / r.wickets) : null,
+      strikeRate: r.wickets > 0 ? round(r.balls / r.wickets) : null,
+      bestBowling: best ? `${best.w}/${best.r}` : "-",
+    };
+  });
+}
+
+export interface AllRounderLeaderboardEntry {
+  _id: Types.ObjectId;
+  player: PlayerSummary | null;
+  team: TeamSummary | null;
+  matches: number;
+  battingInnings: number;
+  runs: number;
+  strikeRate: number;
+  bowlingInnings: number;
+  wickets: number;
+  economy: number;
+  /** runs + ALL_ROUNDER_WICKET_WEIGHT × wickets */
+  points: number;
+}
+
+/**
+ * Players who have both batted and bowled, ranked by a stated formula:
+ * runs plus a fixed weight per wicket. The weight is exposed so the UI can say
+ * exactly how the order was reached.
+ */
+export async function allRounderLeaderboard(
+  tournamentId?: Types.ObjectId,
+  limit = 10
+): Promise<AllRounderLeaderboardEntry[]> {
+  const match: Record<string, unknown> = {};
+  if (tournamentId) match.tournament = tournamentId;
+
+  const [batting, bowling] = await Promise.all([
+    BattingScore.aggregate<{
+      _id: Types.ObjectId;
+      matchIds: Types.ObjectId[];
+      teamIds: Types.ObjectId[];
+      innings: number;
+      runs: number;
+      balls: number;
+    }>([
+      { $match: match },
+      { $sort: { createdAt: 1 } },
+      {
+        $group: {
+          _id: "$player",
+          matchIds: { $addToSet: "$match" },
+          teamIds: { $push: "$team" },
+          innings: { $sum: 1 },
+          runs: { $sum: "$runs" },
+          balls: { $sum: "$balls" },
+        },
+      },
+    ]),
+    BowlingFigure.aggregate<{
+      _id: Types.ObjectId;
+      matchIds: Types.ObjectId[];
+      innings: number;
+      balls: number;
+      runsConceded: number;
+      wickets: number;
+    }>([
+      { $match: match },
+      {
+        $group: {
+          _id: "$player",
+          matchIds: { $addToSet: "$match" },
+          innings: { $sum: 1 },
+          balls: { $sum: BALLS_EXPR },
+          runsConceded: { $sum: "$runsConceded" },
+          wickets: { $sum: "$wickets" },
+        },
+      },
+    ]),
+  ]);
+
+  const bowlingMap = new Map(bowling.map((b) => [String(b._id), b]));
+
+  const combined = batting
+    .map((bat) => {
+      const bowl = bowlingMap.get(String(bat._id));
+      if (!bowl) return null;
+      const matchIds = new Set([...bat.matchIds, ...bowl.matchIds].map(String));
+      return {
+        _id: bat._id,
+        teamIds: bat.teamIds,
+        matches: matchIds.size,
+        battingInnings: bat.innings,
+        runs: bat.runs,
+        strikeRate: bat.balls > 0 ? round((bat.runs / bat.balls) * 100) : 0,
+        bowlingInnings: bowl.innings,
+        wickets: bowl.wickets,
+        economy: bowl.balls > 0 ? round(bowl.runsConceded / (bowl.balls / 6)) : 0,
+        points: bat.runs + ALL_ROUNDER_WICKET_WEIGHT * bowl.wickets,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+    .sort((a, b) => b.points - a.points || b.wickets - a.wickets)
+    .slice(0, limit);
+
+  const enriched = await withPlayerAndTeam(combined);
+  return enriched.map(({ player, team, ...rest }) => ({ ...rest, player, team }));
+}
+
+export interface FieldingLeaderboardEntry {
+  _id: Types.ObjectId;
+  player: PlayerSummary | null;
+  team: TeamSummary | null;
+  catches: number;
+  stumpings: number;
+  runOuts: number;
+  dismissals: number;
+}
+
+/** Fielders ranked by dismissals they were credited with on scorecards. */
+export async function fieldingLeaderboard(
+  tournamentId?: Types.ObjectId,
+  limit = 10
+): Promise<FieldingLeaderboardEntry[]> {
+  const match: Record<string, unknown> = { dismissalFielder: { $ne: null } };
+  if (tournamentId) match.tournament = tournamentId;
+
+  const rows = await BattingScore.aggregate<{
+    _id: Types.ObjectId;
+    catches: number;
+    stumpings: number;
+    runOuts: number;
+    dismissals: number;
+  }>([
+    { $match: match },
+    {
+      $group: {
+        _id: "$dismissalFielder",
+        catches: { $sum: { $cond: [{ $eq: ["$dismissalType", "CAUGHT"] }, 1, 0] } },
+        stumpings: { $sum: { $cond: [{ $eq: ["$dismissalType", "STUMPED"] }, 1, 0] } },
+        runOuts: { $sum: { $cond: [{ $eq: ["$dismissalType", "RUN_OUT"] }, 1, 0] } },
+      },
+    },
+    { $addFields: { dismissals: { $add: ["$catches", "$stumpings", "$runOuts"] } } },
+    { $sort: { dismissals: -1, catches: -1 } },
+    { $limit: limit },
+  ]);
+
+  // the fielder's own team isn't on the batting record, so look up their squad
+  const squads = await TeamSquad.find({
+    player: { $in: rows.map((r) => r._id) },
+    ...(tournamentId ? { tournament: tournamentId } : {}),
+  })
+    .select("player team")
+    .lean();
+  const squadTeam = new Map(squads.map((s) => [String(s.player), s.team]));
+
+  const enriched = await withPlayerAndTeam(
+    rows.map((r) => ({
+      ...r,
+      teamIds: squadTeam.has(String(r._id)) ? [squadTeam.get(String(r._id))] : [],
+    }))
+  );
+  return enriched.map(({ player, team, ...rest }) => ({ ...rest, player, team }));
+}
+
+/**
+ * Backwards-compatible entry point used by the leaderboards endpoint.
+ * "runs" and "wickets" keep their original meaning; the other metrics are new.
+ */
+export async function leaderboard(
+  metric: "runs" | "wickets" | "allrounder" | "fielding",
+  tournamentId?: Types.ObjectId,
+  limit = 10
+) {
+  switch (metric) {
+    case "runs":
+      return battingLeaderboard(tournamentId, limit);
+    case "wickets":
+      return bowlingLeaderboard(tournamentId, limit);
+    case "allrounder":
+      return allRounderLeaderboard(tournamentId, limit);
+    case "fielding":
+      return fieldingLeaderboard(tournamentId, limit);
+  }
+}
+
+async function highestIndividualScores(tournamentId?: Types.ObjectId, limit = 10) {
+  const match: Record<string, unknown> = {};
+  if (tournamentId) match.tournament = tournamentId;
+
+  return BattingScore.find(match)
+    .sort({ runs: -1, balls: 1 })
+    .limit(limit)
+    .populate("player", "fullName profileImage role")
+    .populate("team", "name shortName logo color")
+    .populate({ path: "match", select: "matchNumber matchDate teamA teamB" })
+    .select("runs balls fours sixes isOut player team match")
+    .lean();
+}
+
+async function bestBowlingFigures(tournamentId?: Types.ObjectId, limit = 10) {
+  const match: Record<string, unknown> = { wickets: { $gt: 0 } };
+  if (tournamentId) match.tournament = tournamentId;
+
+  return BowlingFigure.find(match)
+    .sort({ wickets: -1, runsConceded: 1 })
+    .limit(limit)
+    .populate("player", "fullName profileImage role")
+    .populate("team", "name shortName logo color")
+    .populate({ path: "match", select: "matchNumber matchDate teamA teamB" })
+    .select("overs maidens runsConceded wickets player team match")
+    .lean();
+}
+
 /** Aggregate totals and leaderboards for one tournament. */
-export async function getTournamentStatistics(tournamentId: string) {
+export async function getTournamentStatistics(tournamentId: string, limit = 10) {
   const id = new Types.ObjectId(tournamentId);
 
   const [
     totalMatches,
+    completedMatches,
     totalTeams,
-    totalPlayers,
+    squadCount,
+    battedPlayers,
+    bowledPlayers,
     runsAgg,
     wicketsAgg,
+    boundariesAgg,
   ] = await Promise.all([
     Match.countDocuments({ tournament: id }),
+    Match.countDocuments({ tournament: id, status: "COMPLETED" }),
     Team.countDocuments({ tournament: id }),
     TeamSquad.countDocuments({ tournament: id }),
+    BattingScore.distinct("player", { tournament: id }),
+    BowlingFigure.distinct("player", { tournament: id }),
     BattingScore.aggregate<{ total: number }>([
       { $match: { tournament: id } },
       { $group: { _id: null, total: { $sum: "$runs" } } },
@@ -273,115 +708,237 @@ export async function getTournamentStatistics(tournamentId: string) {
       { $match: { tournament: id } },
       { $group: { _id: null, total: { $sum: "$wickets" } } },
     ]),
+    BattingScore.aggregate<{ fours: number; sixes: number }>([
+      { $match: { tournament: id } },
+      { $group: { _id: null, fours: { $sum: "$fours" }, sixes: { $sum: "$sixes" } } },
+    ]),
   ]);
 
-  const [topRunScorers, topWicketTakers, highestScores] = await Promise.all([
-    leaderboard("runs", id, 5),
-    leaderboard("wickets", id, 5),
-    highestIndividualScores(id, 5),
+  const [
+    topRunScorers,
+    topWicketTakers,
+    topAllRounders,
+    topFielders,
+    highestScores,
+    bestBowling,
+  ] = await Promise.all([
+    battingLeaderboard(id, limit),
+    bowlingLeaderboard(id, limit),
+    allRounderLeaderboard(id, limit),
+    fieldingLeaderboard(id, limit),
+    highestIndividualScores(id, limit),
+    bestBowlingFigures(id, limit),
   ]);
+
+  // Squads change over a season — replacements come in, buys drop out — so once
+  // matches exist, count the people who actually took the field.
+  const appeared = new Set([...battedPlayers, ...bowledPlayers].map(String)).size;
 
   return {
     totals: {
       matches: totalMatches,
+      completedMatches,
       teams: totalTeams,
-      players: totalPlayers,
+      players: appeared || squadCount,
       runs: runsAgg[0]?.total ?? 0,
       wickets: wicketsAgg[0]?.total ?? 0,
+      fours: boundariesAgg[0]?.fours ?? 0,
+      sixes: boundariesAgg[0]?.sixes ?? 0,
     },
+    allRounderWicketWeight: ALL_ROUNDER_WICKET_WEIGHT,
     topRunScorers,
     topWicketTakers,
+    topAllRounders,
+    topFielders,
     highestScores,
+    bestBowling,
   };
 }
 
-async function withPlayerDetails<T extends { _id: unknown }>(rows: T[]) {
-  const players = await Player.find({ _id: { $in: rows.map((r) => r._id) } })
-    .select("fullName profileImage role")
-    .lean();
-  const map = new Map(players.map((p) => [String(p._id), p]));
-  return rows.map((row) => ({
-    ...row,
-    player: map.get(String(row._id)) ?? null,
-  }));
+/* ------------------------------------------------------------ standings --- */
+
+export interface TeamStanding {
+  matches: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  noResults: number;
+  /** wins × 2 + ties × 1 + the league's adjustment */
+  points: number;
+  pointsAdjustment: number;
+  /** Net run rate; null until the team has batted and bowled */
+  netRunRate: number | null;
+  runsFor: number;
+  oversFor: number;
+  runsAgainst: number;
+  oversAgainst: number;
+  runs: number;
+  wickets: number;
+  players: number;
+  form: Array<"W" | "L" | "T" | "N">;
 }
 
-/** Top players by runs or wickets, optionally scoped to a tournament. */
-export async function leaderboard(
-  metric: "runs" | "wickets",
-  tournamentId?: Types.ObjectId,
-  limit = 10
-) {
-  const match: Record<string, unknown> = {};
-  if (tournamentId) match.tournament = tournamentId;
+interface StandingAccumulator {
+  matches: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  noResults: number;
+  runsFor: number;
+  ballsFor: number;
+  runsAgainst: number;
+  ballsAgainst: number;
+  form: Array<"W" | "L" | "T" | "N">;
+}
 
-  if (metric === "runs") {
-    const pipeline: PipelineStage[] = [
-      { $match: match },
-      {
-        $group: {
-          _id: "$player",
-          runs: { $sum: "$runs" },
-          balls: { $sum: "$balls" },
-          innings: { $sum: 1 },
-          fours: { $sum: "$fours" },
-          sixes: { $sum: "$sixes" },
-        },
-      },
-      { $sort: { runs: -1 } },
-      { $limit: limit },
-    ];
-    const rows = await BattingScore.aggregate(pipeline);
-    return withPlayerDetails(
-      rows.map((r) => ({
-        ...r,
-        strikeRate: r.balls > 0 ? round((r.runs / r.balls) * 100) : 0,
-      }))
-    );
+function emptyAccumulator(): StandingAccumulator {
+  return {
+    matches: 0,
+    wins: 0,
+    losses: 0,
+    ties: 0,
+    noResults: 0,
+    runsFor: 0,
+    ballsFor: 0,
+    runsAgainst: 0,
+    ballsAgainst: 0,
+    form: [],
+  };
+}
+
+/**
+ * Builds every team's standing in a tournament from match results and innings.
+ *
+ * Net run rate follows the standard convention: a side bowled out is charged
+ * its full quota of overs, not the overs it actually faced.
+ */
+async function computeStandings(
+  tournamentId: Types.ObjectId
+): Promise<Map<string, StandingAccumulator>> {
+  const [matches, innings] = await Promise.all([
+    Match.find({
+      tournament: tournamentId,
+      status: { $in: ["COMPLETED", "ABANDONED"] },
+    })
+      .select("teamA teamB winner status result overs matchDate")
+      .sort({ matchDate: 1, createdAt: 1 })
+      .lean(),
+    Innings.find({ tournament: tournamentId })
+      .select("match battingTeam bowlingTeam inningsNumber totalRuns totalOvers allOut")
+      .lean(),
+  ]);
+
+  const table = new Map<string, StandingAccumulator>();
+  const get = (id: unknown) => {
+    const key = String(id);
+    if (!table.has(key)) table.set(key, emptyAccumulator());
+    return table.get(key)!;
+  };
+
+  const matchInfo = new Map(
+    matches.map((m) => [
+      String(m._id),
+      { quota: m.overs ?? 20, winner: m.winner ? String(m.winner) : null },
+    ])
+  );
+
+  for (const m of matches) {
+    const a = get(m.teamA);
+    const b = get(m.teamB);
+    a.matches += 1;
+    b.matches += 1;
+
+    if (m.status === "ABANDONED" || (!m.winner && !/tie/i.test(m.result ?? ""))) {
+      a.noResults += 1;
+      b.noResults += 1;
+      a.form.push("N");
+      b.form.push("N");
+      continue;
+    }
+
+    if (!m.winner) {
+      a.ties += 1;
+      b.ties += 1;
+      a.form.push("T");
+      b.form.push("T");
+      continue;
+    }
+
+    const winner = String(m.winner);
+    const [w, l] = winner === String(m.teamA) ? [a, b] : [b, a];
+    w.wins += 1;
+    l.losses += 1;
+    w.form.push("W");
+    l.form.push("L");
   }
 
-  const pipeline: PipelineStage[] = [
-    { $match: match },
-    {
-      $group: {
-        _id: "$player",
-        wickets: { $sum: "$wickets" },
-        runsConceded: { $sum: "$runsConceded" },
-        innings: { $sum: 1 },
-      },
-    },
-    { $sort: { wickets: -1 } },
-    { $limit: limit },
-  ];
-  const rows = await BowlingFigure.aggregate(pipeline);
-  return withPlayerDetails(rows);
+  for (const inn of innings) {
+    const info = matchInfo.get(String(inn.match));
+    // innings from matches that didn't reach a result don't count towards NRR
+    if (!info) continue;
+
+    const quotaBalls = info.quota * 6;
+    const actualBalls = oversToBalls(inn.totalOvers);
+    // The one legitimate way to finish early is to win the chase. Any other
+    // short innings — bowled out, or out of batters in a small-sided game —
+    // is charged the full quota, which is how the official table works too.
+    const chasedAndWon =
+      inn.inningsNumber > 1 && info.winner !== null && info.winner === String(inn.battingTeam);
+    const balls =
+      inn.allOut || (actualBalls < quotaBalls && !chasedAndWon) ? quotaBalls : actualBalls;
+    const bat = get(inn.battingTeam);
+    const bowl = get(inn.bowlingTeam);
+    bat.runsFor += inn.totalRuns;
+    bat.ballsFor += balls;
+    bowl.runsAgainst += inn.totalRuns;
+    bowl.ballsAgainst += balls;
+  }
+
+  return table;
 }
 
-async function highestIndividualScores(tournamentId?: Types.ObjectId, limit = 5) {
-  const match: Record<string, unknown> = {};
-  if (tournamentId) match.tournament = tournamentId;
+function finishStanding(
+  acc: StandingAccumulator,
+  pointsAdjustment: number,
+  runs: number,
+  wickets: number,
+  players: number
+): TeamStanding {
+  const forRate = acc.ballsFor > 0 ? acc.runsFor / (acc.ballsFor / 6) : null;
+  const againstRate =
+    acc.ballsAgainst > 0 ? acc.runsAgainst / (acc.ballsAgainst / 6) : null;
 
-  const rows = await BattingScore.find(match)
-    .sort({ runs: -1 })
-    .limit(limit)
-    .populate("player", "fullName profileImage role")
-    .populate("team", "name shortName logo")
-    .select("runs balls fours sixes player team match")
-    .lean();
-
-  return rows;
+  return {
+    matches: acc.matches,
+    wins: acc.wins,
+    losses: acc.losses,
+    ties: acc.ties,
+    noResults: acc.noResults,
+    points: acc.wins * POINTS_FOR_WIN + acc.ties * POINTS_FOR_TIE + pointsAdjustment,
+    pointsAdjustment,
+    netRunRate:
+      forRate !== null && againstRate !== null ? round(forRate - againstRate, 3) : null,
+    runsFor: acc.runsFor,
+    oversFor: ballsToOvers(acc.ballsFor),
+    runsAgainst: acc.runsAgainst,
+    oversAgainst: ballsToOvers(acc.ballsAgainst),
+    runs,
+    wickets,
+    players,
+    form: acc.form.slice(-5),
+  };
 }
 
-/** Match record and aggregate run/wicket totals for a team. */
-export async function getTeamStatistics(teamId: string) {
+/** Match record, points, net run rate and aggregate totals for one team. */
+export async function getTeamStatistics(teamId: string): Promise<TeamStanding> {
+  const team = await Team.findById(teamId).select("tournament pointsAdjustment").lean();
+  if (!team) {
+    return finishStanding(emptyAccumulator(), 0, 0, 0, 0);
+  }
+
   const id = new Types.ObjectId(teamId);
-
-  const [matches, wins, runsAgg, wicketsAgg, squadCount] = await Promise.all([
-    Match.countDocuments({
-      $or: [{ teamA: id }, { teamB: id }],
-      status: "COMPLETED",
-    }),
-    Match.countDocuments({ winner: id, status: "COMPLETED" }),
+  const [standings, runsAgg, wicketsAgg, squadCount] = await Promise.all([
+    computeStandings(team.tournament as Types.ObjectId),
     BattingScore.aggregate<{ total: number }>([
       { $match: { team: id } },
       { $group: { _id: null, total: { $sum: "$runs" } } },
@@ -393,34 +950,63 @@ export async function getTeamStatistics(teamId: string) {
     TeamSquad.countDocuments({ team: id }),
   ]);
 
-  const losses = Math.max(0, matches - wins);
-
-  return {
-    matches,
-    wins,
-    losses,
-    // 2 points per win, the standard league scheme
-    points: wins * 2,
-    runs: runsAgg[0]?.total ?? 0,
-    wickets: wicketsAgg[0]?.total ?? 0,
-    players: squadCount,
-  };
+  return finishStanding(
+    standings.get(teamId) ?? emptyAccumulator(),
+    team.pointsAdjustment ?? 0,
+    runsAgg[0]?.total ?? 0,
+    wicketsAgg[0]?.total ?? 0,
+    squadCount
+  );
 }
 
-/** Points table for a tournament, ordered by points then win count. */
+/** Points table for a tournament: points, then wins, then net run rate. */
 export async function getPointsTable(tournamentId: string) {
-  const teams = await Team.find({ tournament: tournamentId })
-    .select("name shortName logo color")
-    .lean();
+  const id = new Types.ObjectId(tournamentId);
 
-  const rows = await Promise.all(
-    teams.map(async (team) => {
-      const stats = await getTeamStatistics(String(team._id));
-      return { team, ...stats };
-    })
+  const [teams, standings, runsAgg, wicketsAgg, squadAgg] = await Promise.all([
+    Team.find({ tournament: id })
+      .select("name shortName logo color pointsAdjustment")
+      .lean(),
+    computeStandings(id),
+    BattingScore.aggregate<{ _id: Types.ObjectId; total: number }>([
+      { $match: { tournament: id } },
+      { $group: { _id: "$team", total: { $sum: "$runs" } } },
+    ]),
+    BowlingFigure.aggregate<{ _id: Types.ObjectId; total: number }>([
+      { $match: { tournament: id } },
+      { $group: { _id: "$team", total: { $sum: "$wickets" } } },
+    ]),
+    TeamSquad.aggregate<{ _id: Types.ObjectId; count: number }>([
+      { $match: { tournament: id } },
+      { $group: { _id: "$team", count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const runsMap = new Map(runsAgg.map((r) => [String(r._id), r.total]));
+  const wicketsMap = new Map(wicketsAgg.map((r) => [String(r._id), r.total]));
+  const squadMap = new Map(squadAgg.map((r) => [String(r._id), r.count]));
+
+  const rows = teams.map((team) => {
+    const key = String(team._id);
+    const { pointsAdjustment, ...teamSummary } = team;
+    return {
+      team: teamSummary,
+      ...finishStanding(
+        standings.get(key) ?? emptyAccumulator(),
+        pointsAdjustment ?? 0,
+        runsMap.get(key) ?? 0,
+        wicketsMap.get(key) ?? 0,
+        squadMap.get(key) ?? 0
+      ),
+    };
+  });
+
+  return rows.sort(
+    (a, b) =>
+      b.points - a.points ||
+      b.wins - a.wins ||
+      (b.netRunRate ?? -Infinity) - (a.netRunRate ?? -Infinity)
   );
-
-  return rows.sort((a, b) => b.points - a.points || b.wins - a.wins);
 }
 
 /** Platform-wide counters for the admin dashboard. */

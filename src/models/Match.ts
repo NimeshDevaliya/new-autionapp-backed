@@ -15,6 +15,9 @@ export interface IMatch extends Document {
   winner?: Types.ObjectId | null;
   result?: string;
   overs?: number;
+  playerOfTheMatch?: Types.ObjectId | null;
+  /** Match id in the scoring system the league records matches on (CricHeroes). */
+  externalId?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -44,6 +47,8 @@ const matchSchema = new Schema<IMatch>(
     result: { type: String },
     /** Overs per innings for this match format (e.g. 20 for T20). */
     overs: { type: Number, default: 20 },
+    playerOfTheMatch: { type: Schema.Types.ObjectId, ref: "Player", default: null },
+    externalId: { type: Number, index: true, unique: true, sparse: true },
   },
   { timestamps: true }
 );

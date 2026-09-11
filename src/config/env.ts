@@ -22,4 +22,15 @@ export const env = {
     .filter(Boolean),
   wsPath: process.env.WS_PATH ?? "/ws",
   isProduction: process.env.NODE_ENV === "production",
+
+  /**
+   * The scoring service the league records matches on. The default key is the
+   * one CricHeroes' own public website ships to every browser — it is not a
+   * secret, but it can be overridden if it ever changes.
+   */
+  cricheroes: {
+    apiBase: process.env.CRICHEROES_API_BASE ?? "https://api.cricheroes.in",
+    webBase: process.env.CRICHEROES_WEB_BASE ?? "https://cricheroes.com",
+    apiKey: process.env.CRICHEROES_API_KEY ?? "cr!CkH3r0s",
+  },
 };

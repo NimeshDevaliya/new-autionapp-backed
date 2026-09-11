@@ -17,6 +17,13 @@ export interface ITeam extends Document {
   maxForeignPlayers?: number;
   status: TeamStatus;
   tournament: Types.ObjectId;
+  /** Team id in the scoring system the league records matches on (CricHeroes). */
+  externalId?: number;
+  /**
+   * Points the league awarded outside the win/loss record (bonus or penalty
+   * points), so the derived table can match the official one.
+   */
+  pointsAdjustment: number;
   createdBy?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
@@ -42,6 +49,8 @@ const teamSchema = new Schema<ITeam>(
       required: true,
       index: true,
     },
+    externalId: { type: Number, index: true },
+    pointsAdjustment: { type: Number, default: 0 },
     createdBy: { type: Schema.Types.ObjectId, ref: "Admin" },
   },
   {
