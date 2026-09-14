@@ -11,6 +11,7 @@ import { Tournament } from "../models/Tournament";
 import { DismissalType } from "../types/enums";
 import { ApiError } from "../utils/ApiError";
 import { getPointsTable } from "./statistics.service";
+import { photoFor } from "../seed/player-photos";
 
 /**
  * Imports a tournament's matches from CricHeroes, the scoring app the league
@@ -465,6 +466,7 @@ async function resolvePlayer(
     basePrice: 10,
     isActive: true,
     externalId: chId,
+    profileImage: photoFor(clean),
     createdBy: ctx.createdBy,
   });
   const doc: PlayerDoc = { _id: created._id, fullName: created.fullName, externalId: chId };

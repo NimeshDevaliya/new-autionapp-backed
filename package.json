@@ -12,6 +12,7 @@
     "start": "node dist/server.js",
     "seed": "tsx src/seed/seed.ts",
     "import:cricheroes": "tsx src/seed/import-cricheroes.ts",
+    "import:photos": "tsx src/seed/import-photos.ts",
     "test": "tsx --test src/__tests__/*.test.ts",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit"

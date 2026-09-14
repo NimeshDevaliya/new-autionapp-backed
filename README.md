@@ -131,6 +131,19 @@ squad of, and the official standings beside ours.
 
 Squads are the auction record and are never changed by a sync.
 
+### Player photos
+
+```bash
+npm run import:photos                    # after a results sync
+npm run import:photos -- --out <folder>  # somewhere other than the frontend's public/player-photos
+```
+
+Downloads each linked player's CricHeroes profile photo into the frontend's
+`public/player-photos/` folder, one file per player named after them
+(`dishang-chavda.jpg`), applies it to the running API, and records the mapping
+in `src/seed/player-photos.json` so the seed and later syncs pick the photos up
+automatically. Players with no CricHeroes profile are listed at the end.
+
 This uses the public web API the CricHeroes website itself calls, with the key
 that site ships to every browser. It is the league's own data and the sync is
 light (a few requests per match, run occasionally), but it is an undocumented

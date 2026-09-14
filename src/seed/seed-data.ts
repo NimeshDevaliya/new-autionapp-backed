@@ -10,6 +10,7 @@ import { Match } from "../models/Match";
 import { Innings } from "../models/Innings";
 import { BattingScore } from "../models/BattingScore";
 import { BowlingFigure } from "../models/BowlingFigure";
+import { photoFor } from "./player-photos";
 
 /**
  * Real MedianV Premier League data.
@@ -294,6 +295,8 @@ export async function runSeed({ force = false }: { force?: boolean } = {}) {
       category: "LOCAL",
       basePrice: BASE_PRICE,
       isActive: true,
+      // photos downloaded by `npm run import:photos`, when present
+      profileImage: photoFor(fullName),
       createdBy: superAdmin._id,
     }))
   );
