@@ -8,6 +8,7 @@ import http from "http";
 import { AddressInfo } from "net";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
+import { WebSocket } from "ws";
 
 process.env.JWT_SECRET ??= "test-secret-value-for-local-testing-only";
 process.env.MONGODB_URI ??= "mongodb://127.0.0.1:27017/placeholder";
@@ -18,6 +19,7 @@ let replset: MongoMemoryReplSet;
 let server: http.Server;
 let wss: import("ws").WebSocketServer;
 let baseUrl: string;
+let wsUrl: string;
 let adminToken: string;
 
 interface ApiResult<T = any> {
@@ -53,10 +55,13 @@ before(async () => {
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const { port } = server.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${port}`;
+  wsUrl = `ws://127.0.0.1:${port}/ws`;
 });
 
 after(async () => {
-  // the socket server's heartbeat interval would otherwise keep the runner alive
+  // the socket server's heartbeat interval and any client left open by a failed
+  // test would otherwise keep the runner alive
+  wss.clients.forEach((client) => client.terminate());
   await new Promise<void>((resolve) => wss.close(() => resolve()));
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await mongoose.disconnect();
@@ -66,6 +71,80 @@ after(async () => {
 /** ids shared across the ordered tests below */
 const ids: Record<string, string> = {};
 const ownerTokens: Record<string, string> = {};
+
+interface SocketMsg {
+  event: string;
+  data: Record<string, any>;
+  auctionId?: string;
+}
+interface TestSocket {
+  ws: WebSocket;
+  send(msg: unknown): void;
+  /** next message whose event is one of `events`, dropping others (broadcasts) in between */
+  until(events: string | string[], timeoutMs?: number): Promise<SocketMsg>;
+  close(): void;
+}
+
+function connectSocket(auctionId: string): Promise<TestSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${wsUrl}?auctionId=${auctionId}`);
+    const queue: SocketMsg[] = [];
+    let waiter: ((m: SocketMsg) => void) | null = null;
+    ws.on("message", (raw) => {
+      const msg = JSON.parse(raw.toString()) as SocketMsg;
+      if (waiter) {
+        const w = waiter;
+        waiter = null;
+        w(msg);
+      } else {
+        queue.push(msg);
+      }
+    });
+    const next = () =>
+      queue.length
+        ? Promise.resolve(queue.shift()!)
+        : new Promise<SocketMsg>((r) => {
+            waiter = r;
+          });
+    ws.on("error", reject);
+    ws.on("open", () =>
+      resolve({
+        ws,
+        send: (msg) => ws.send(JSON.stringify(msg)),
+        async until(events, timeoutMs = 3000) {
+          // one waiter slot per socket: never call until() twice concurrently on
+          // the same socket — pass several events instead
+          const wanted = Array.isArray(events) ? events : [events];
+          const deadline = Date.now() + timeoutMs;
+          for (;;) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) throw new Error(`timed out waiting for ${wanted.join("|")}`);
+            const msg = await Promise.race([
+              next(),
+              new Promise<never>((_, rej) =>
+                setTimeout(
+                  () => rej(new Error(`timed out waiting for ${wanted.join("|")}`)),
+                  remaining
+                )
+              ),
+            ]);
+            if (wanted.includes(msg.event)) return msg;
+          }
+        },
+        close: () => ws.close(),
+      })
+    );
+  });
+}
+
+async function authedSocket(teamKey: string): Promise<TestSocket> {
+  const s = await connectSocket(ids.auction);
+  await s.until("CONNECTED");
+  s.send({ action: "auth", token: ownerTokens[teamKey] });
+  const reply = await s.until("AUTHED");
+  assert.equal(reply.data.teamId, ids[teamKey]);
+  return s;
+}
 
 describe("Team bidding — setup", () => {
   test("admin logs in and builds a live auction with four teams", async () => {
@@ -315,5 +394,143 @@ describe("Team bidding — atomic placeBid", () => {
     assert.equal(res.body.data.nextBid, 13);
     assert.equal(res.body.data.bid.source, "CONSOLE");
     ids.consoleLeader = loser;
+  });
+});
+
+describe("Team bidding — socket protocol", () => {
+  const sockets: TestSocket[] = [];
+  after(() => sockets.forEach((s) => s.close()));
+
+  test("an unauthenticated socket cannot bid", async () => {
+    const viewer = await connectSocket(ids.auction);
+    sockets.push(viewer);
+    await viewer.until("CONNECTED");
+    viewer.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 13 });
+    const reply = await viewer.until("BID_REJECTED");
+    assert.equal(reply.data.code, "NOT_AUTHED");
+  });
+
+  test("auth fails for garbage and for admin tokens, succeeds for an owner token", async () => {
+    const s = await connectSocket(ids.auction);
+    sockets.push(s);
+    await s.until("CONNECTED");
+    s.send({ action: "auth", token: "not-a-token" });
+    assert.equal((await s.until("AUTH_FAILED")).data.message, "Invalid or expired team session");
+    s.send({ action: "auth", token: adminToken });
+    await s.until("AUTH_FAILED");
+    s.send({ action: "auth", token: ownerTokens.teamB });
+    assert.equal((await s.until("AUTHED")).data.teamId, ids.teamB);
+  });
+
+  test("an authed owner bids the exact next amount; everyone gets BID_PLACED", async () => {
+    // state from Task 3: consoleLeader holds 12, nextBid 13. B has purse 11 → can't; use D.
+    const viewer = await connectSocket(ids.auction);
+    const d = await authedSocket("teamD");
+    sockets.push(viewer, d);
+    await viewer.until("CONNECTED");
+
+    d.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 13 });
+    const accepted = await d.until("BID_ACCEPTED");
+    assert.equal(accepted.data.amount, 13);
+    assert.equal(accepted.data.auctionPlayerId, ids.auctionPlayer);
+
+    const placed = await viewer.until("BID_PLACED");
+    assert.equal(placed.data.currentBid, 13);
+    assert.equal(placed.data.nextBid, 14);
+    assert.equal(placed.data.team._id, ids.teamD);
+    assert.equal(placed.data.source, "TEAM");
+
+    const { Bid } = await import("../models/Bid");
+    const row = await Bid.findById(accepted.data.bidId);
+    assert.equal(row?.source, "TEAM");
+    assert.equal(String(row?.placedByOwner), ids.teamDOwner);
+
+    // team id comes from the token: bidding again is "already highest", not a second bid
+    d.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 14 });
+    assert.equal((await d.until("BID_REJECTED")).data.code, "ALREADY_HIGHEST");
+  });
+
+  test("stale amounts, wrong player, pause and over-budget are rejected with codes", async () => {
+    const a = await authedSocket("teamA");
+    const b = await authedSocket("teamB");
+    sockets.push(a, b);
+
+    a.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 13 }); // old amount
+    let r = await a.until("BID_REJECTED");
+    assert.equal(r.data.code, "OUTBID");
+    assert.equal(r.data.nextBid, 14);
+
+    a.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 20 }); // too high
+    r = await a.until("BID_REJECTED");
+    assert.equal(r.data.code, "STALE_AMOUNT");
+    assert.equal(r.data.nextBid, 14);
+
+    a.send({ action: "bid", auctionPlayerId: ids.player2, amount: 14 }); // not the current lot
+    r = await a.until("BID_REJECTED");
+    assert.equal(r.data.code, "NO_CURRENT_PLAYER");
+
+    a.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: "14" }); // wrong type
+    r = await a.until("BID_REJECTED");
+    assert.equal(r.data.code, "INVALID_AMOUNT");
+
+    await api("POST", `/auctions/${ids.auction}/pause`);
+    a.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 14 });
+    r = await a.until("BID_REJECTED");
+    assert.equal(r.data.code, "PAUSED");
+    await api("POST", `/auctions/${ids.auction}/resume`);
+
+    b.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 14 }); // purse is 11
+    r = await b.until("BID_REJECTED");
+    assert.equal(r.data.code, "OVER_BUDGET");
+  });
+
+  test("a deactivated owner's live socket can no longer bid", async () => {
+    const c = await authedSocket("teamC");
+    sockets.push(c);
+    const off = await api("PATCH", `/teams/${ids.teamC}/owners/${ids.teamCOwner}`, {
+      status: "INACTIVE",
+    });
+    assert.equal(off.status, 200);
+
+    c.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 14 });
+    assert.equal((await c.until("BID_REJECTED")).data.code, "NOT_AUTHED");
+
+    await api("PATCH", `/teams/${ids.teamC}/owners/${ids.teamCOwner}`, { status: "ACTIVE" });
+  });
+
+  test("two owners tapping together: one BID_ACCEPTED, one OUTBID, one Bid row", async () => {
+    const a = await authedSocket("teamA");
+    const c = await authedSocket("teamC");
+    sockets.push(a, c);
+    const { Bid } = await import("../models/Bid");
+    const before = await Bid.countDocuments({ auctionPlayer: ids.auctionPlayer });
+
+    a.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 14 });
+    c.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 14 });
+
+    const replies = await Promise.all([
+      a.until(["BID_ACCEPTED", "BID_REJECTED"]),
+      c.until(["BID_ACCEPTED", "BID_REJECTED"]),
+    ]);
+    const events = replies.map((r) => r.event).sort();
+    assert.deepEqual(events, ["BID_ACCEPTED", "BID_REJECTED"]);
+    const rejected = replies.find((r) => r.event === "BID_REJECTED")!;
+    assert.equal(rejected.data.code, "OUTBID");
+    assert.equal(rejected.data.nextBid, 15);
+    assert.equal(await Bid.countDocuments({ auctionPlayer: ids.auctionPlayer }), before + 1);
+  });
+
+  test("the sale still broadcasts and stops further bids", async () => {
+    const viewer = await connectSocket(ids.auction);
+    const d = await authedSocket("teamD");
+    sockets.push(viewer, d);
+    await viewer.until("CONNECTED");
+    const sold = await api("POST", `/auctions/${ids.auction}/sell`);
+    assert.equal(sold.status, 200, sold.body.message);
+    assert.equal(sold.body.data.soldPrice, 14);
+    await viewer.until("PLAYER_SOLD");
+
+    d.send({ action: "bid", auctionPlayerId: ids.auctionPlayer, amount: 15 });
+    assert.equal((await d.until("BID_REJECTED")).data.code, "NO_CURRENT_PLAYER");
   });
 });
