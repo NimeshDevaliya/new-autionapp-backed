@@ -52,6 +52,11 @@ export async function authenticate(
       throw ApiError.unauthorized("Invalid authentication token");
     }
 
+    // team-owner sessions carry `kind: "owner"` and never open the admin panel
+    if ((payload as { kind?: string }).kind === "owner") {
+      throw ApiError.unauthorized("Team accounts cannot access the admin panel");
+    }
+
     const admin = await Admin.findById(payload.sub);
     if (!admin) throw ApiError.unauthorized("Account no longer exists");
     if (admin.status !== "ACTIVE") {

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import authRoutes from "./auth.routes";
+import teamAuthRoutes from "./team-auth.routes";
 import adminRoutes from "./admin.routes";
 import tournamentRoutes from "./tournament.routes";
 import teamRoutes from "./team.routes";
@@ -23,6 +24,7 @@ router.get("/health", (_req, res) => {
 });
 
 router.use("/auth", authRoutes);
+router.use("/team-auth", teamAuthRoutes);
 router.use("/admins", adminRoutes);
 router.use("/tournaments", tournamentRoutes);
 router.use("/teams", teamRoutes);

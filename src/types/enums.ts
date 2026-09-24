@@ -74,3 +74,10 @@ export const AUCTION_EVENTS = {
   AUCTION_COMPLETED: "AUCTION_COMPLETED",
 } as const;
 export type AuctionEvent = (typeof AUCTION_EVENTS)[keyof typeof AUCTION_EVENTS];
+
+export const TEAM_OWNER_STATUSES = ["ACTIVE", "INACTIVE"] as const;
+export type TeamOwnerStatus = (typeof TEAM_OWNER_STATUSES)[number];
+
+/** Where a bid was registered from. */
+export const BID_SOURCES = ["CONSOLE", "TEAM"] as const;
+export type BidSource = (typeof BID_SOURCES)[number];
