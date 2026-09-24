@@ -18,7 +18,6 @@ let replset: MongoMemoryReplSet;
 let server: http.Server;
 let wss: import("ws").WebSocketServer;
 let baseUrl: string;
-let wsUrl: string;
 let adminToken: string;
 
 interface ApiResult<T = any> {
@@ -54,7 +53,6 @@ before(async () => {
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const { port } = server.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${port}`;
-  wsUrl = `ws://127.0.0.1:${port}/ws`;
 });
 
 after(async () => {
@@ -204,5 +202,66 @@ describe("Team bidding — owner auth", () => {
   test("admin tokens are refused by owner routes", async () => {
     const res = await api("GET", "/team-auth/me", undefined, adminToken);
     assert.equal(res.status, 401);
+  });
+});
+
+describe("Team bidding — admin manages owners", () => {
+  test("lists a team's owners without passwords", async () => {
+    const res = await api("GET", `/teams/${ids.teamA}/owners`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.data.length, 1);
+    assert.equal(res.body.data[0].email, "teama@test.com");
+    assert.equal(res.body.data[0].password, undefined);
+  });
+
+  test("requires an admin token", async () => {
+    const res = await api("GET", `/teams/${ids.teamA}/owners`, undefined, ownerTokens.teamA);
+    assert.equal(res.status, 401);
+  });
+
+  test("creates, renames, resets the password of and deletes an owner", async () => {
+    const created = await api("POST", `/teams/${ids.teamA}/owners`, {
+      name: "Temp Owner",
+      email: "temp@test.com",
+      password: "Temp@12345",
+    });
+    assert.equal(created.status, 201, created.body.message);
+    const ownerId = created.body.data._id;
+
+    const dup = await api("POST", `/teams/${ids.teamB}/owners`, {
+      name: "Dup",
+      email: "temp@test.com",
+      password: "Temp@12345",
+    });
+    assert.equal(dup.status, 409);
+
+    const short = await api("POST", `/teams/${ids.teamA}/owners`, {
+      name: "X",
+      email: "bad",
+      password: "123",
+    });
+    assert.equal(short.status, 422);
+
+    const renamed = await api("PATCH", `/teams/${ids.teamA}/owners/${ownerId}`, {
+      name: "Temp Renamed",
+      password: "Fresh@12345",
+    });
+    assert.equal(renamed.status, 200, renamed.body.message);
+    assert.equal(renamed.body.data.name, "Temp Renamed");
+
+    const login = await api("POST", "/team-auth/login", {
+      email: "temp@test.com",
+      password: "Fresh@12345",
+    }, null);
+    assert.equal(login.status, 200);
+
+    // an owner is scoped to its team — the wrong team id is a 404
+    const wrongTeam = await api("DELETE", `/teams/${ids.teamB}/owners/${ownerId}`);
+    assert.equal(wrongTeam.status, 404);
+
+    const removed = await api("DELETE", `/teams/${ids.teamA}/owners/${ownerId}`);
+    assert.equal(removed.status, 200);
+    const list = await api("GET", `/teams/${ids.teamA}/owners`);
+    assert.equal(list.body.data.length, 1);
   });
 });

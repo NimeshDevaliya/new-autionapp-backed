@@ -7,6 +7,7 @@ import {
   MATCH_STATUSES,
   PLAYER_CATEGORIES,
   PLAYER_ROLES,
+  TEAM_OWNER_STATUSES,
   TEAM_STATUSES,
   TOURNAMENT_STATUSES,
 } from "../types/enums";
@@ -168,6 +169,22 @@ export const placeBidSchema = z.object({
   teamId: objectId,
   amount: z.coerce.number().min(0).optional(),
 });
+
+/* --------------------------------------------------------- team owners --- */
+
+export const createTeamOwnerSchema = z.object({
+  name: z.string().trim().min(2, "Name is required"),
+  email: z.string().trim().toLowerCase().email("A valid email is required"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+});
+
+export const updateTeamOwnerSchema = z.object({
+  name: z.string().trim().min(2).optional(),
+  status: z.enum(TEAM_OWNER_STATUSES).optional(),
+  password: z.string().min(8, "Password must be at least 8 characters").optional(),
+});
+
+export const teamOwnerParams = z.object({ id: objectId, ownerId: objectId });
 
 export const setCurrentPlayerSchema = z.object({
   auctionPlayerId: objectId.optional(),
