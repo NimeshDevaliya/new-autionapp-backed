@@ -1,4 +1,5 @@
 import { Admin } from "../models/Admin";
+import { TeamOwner } from "../models/TeamOwner";
 import { Tournament } from "../models/Tournament";
 import { Team } from "../models/Team";
 import { Player } from "../models/Player";
@@ -209,6 +210,7 @@ export async function runSeed({ force = false }: { force?: boolean } = {}) {
     console.log("[seed] --force: clearing existing collections");
     await Promise.all([
       Admin.deleteMany({}),
+      TeamOwner.deleteMany({}),
       Tournament.deleteMany({}),
       Team.deleteMany({}),
       Player.deleteMany({}),
@@ -281,6 +283,20 @@ export async function runSeed({ force = false }: { force?: boolean } = {}) {
   );
   const teamByName = new Map(teamDocs.map((t) => [t.name, t]));
   console.log(`[seed] ${teamDocs.length} teams created`);
+
+  /* ---------------------------------------------------------- team owners -- */
+  const ownerEmail = (team: { shortName?: string; name: string }) =>
+    `owner-${(team.shortName ?? team.name).toLowerCase().replace(/[^a-z0-9]+/g, "")}@medianv.com`;
+  for (const team of teamDocs) {
+    await TeamOwner.create({
+      name: `${team.name} Owner`,
+      email: ownerEmail(team),
+      password: "Owner@12345",
+      team: team._id,
+      status: "ACTIVE",
+    });
+  }
+  console.log(`[seed] ${teamDocs.length} team owners created`);
 
   /* ------------------------------------------------------------- players -- */
   const allNames = [
@@ -376,5 +392,8 @@ export async function runSeed({ force = false }: { force?: boolean } = {}) {
   console.log("\n=== Seed complete ===");
   console.log("Super admin:      admin@medianv.com / Admin@12345");
   console.log("Auction operator: operator@medianv.com / Operator@12345");
+  console.log(
+    `Team owners:      ${teamDocs.map((t) => ownerEmail(t)).join(", ")} / Owner@12345`
+  );
   console.log("");
 }

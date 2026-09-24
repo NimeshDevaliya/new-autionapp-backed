@@ -36,7 +36,9 @@ async function main() {
   server.listen(env.port, () => {
     console.log(`\n[dev] API on http://localhost:${env.port}`);
     console.log(`[dev] WebSocket on ws://localhost:${env.port}${env.wsPath}`);
-    console.log("[dev] admin@medianv.com / Admin@12345\n");
+    console.log("[dev] admin@medianv.com / Admin@12345");
+    console.log("[dev] team owner: owner-rv@medianv.com / Owner@12345  (team app: /team/login)");
+    console.log("[dev] live board: http://localhost:3000/live\n");
   });
 
   const shutdown = async () => {
