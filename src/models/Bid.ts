@@ -1,4 +1,5 @@
 import mongoose, { Document, Schema, Types } from "mongoose";
+import { BID_SOURCES, BidSource } from "../types/enums";
 
 /** Append-only bid history. One document per accepted bid. */
 export interface IBid extends Document {
@@ -7,8 +8,12 @@ export interface IBid extends Document {
   auctionPlayer: Types.ObjectId;
   team: Types.ObjectId;
   amount: number;
-  /** The operator who registered the bid. */
+  /** Where the bid came from: the operator console or the team's own app. */
+  source: BidSource;
+  /** The operator who registered a console bid. */
   placedBy?: Types.ObjectId;
+  /** The team owner who tapped Bid in the team app. */
+  placedByOwner?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -34,7 +39,9 @@ const bidSchema = new Schema<IBid>(
       index: true,
     },
     amount: { type: Number, required: true, min: 0 },
+    source: { type: String, enum: BID_SOURCES, default: "CONSOLE" },
     placedBy: { type: Schema.Types.ObjectId, ref: "Admin" },
+    placedByOwner: { type: Schema.Types.ObjectId, ref: "TeamOwner" },
   },
   { timestamps: true }
 );

@@ -265,3 +265,55 @@ describe("Team bidding — admin manages owners", () => {
     assert.equal(list.body.data.length, 1);
   });
 });
+
+describe("Team bidding — atomic placeBid", () => {
+  test("two teams bidding at the same instant produce exactly one accepted bid", async () => {
+    const { placeBid, BidError } = await import("../services/auction.service");
+    const { Bid } = await import("../models/Bid");
+
+    // both see nextBid = 10 (opening bid) and fire together
+    const results = await Promise.allSettled([
+      placeBid({ auctionId: ids.auction, teamId: ids.teamA, amount: 10, exact: true, source: "TEAM" }),
+      placeBid({ auctionId: ids.auction, teamId: ids.teamC, amount: 10, exact: true, source: "TEAM" }),
+    ]);
+
+    const won = results.filter((r) => r.status === "fulfilled");
+    const lost = results.filter((r) => r.status === "rejected");
+    assert.equal(won.length, 1, JSON.stringify(results.map((r) => r.status)));
+    assert.equal(lost.length, 1);
+
+    const winner = (won[0] as PromiseFulfilledResult<any>).value;
+    assert.equal(winner.auctionPlayer.currentBid, 10);
+    assert.equal(winner.nextBid, 11);
+    assert.equal(winner.bid.source, "TEAM");
+    ids.raceWinner = String(winner.team._id);
+
+    const err = (lost[0] as PromiseRejectedResult).reason;
+    assert.ok(err instanceof BidError, `expected BidError, got ${err}`);
+    assert.equal(err.code, "OUTBID");
+    assert.equal(err.nextBid, 11);
+
+    assert.equal(await Bid.countDocuments({ auctionPlayer: ids.auctionPlayer }), 1);
+  });
+
+  test("exact mode rejects an amount above the next bid as stale", async () => {
+    const { placeBid, BidError } = await import("../services/auction.service");
+    const loser = ids.raceWinner === ids.teamA ? ids.teamC : ids.teamA;
+    await assert.rejects(
+      placeBid({ auctionId: ids.auction, teamId: loser, amount: 13, exact: true }),
+      (err: unknown) =>
+        err instanceof BidError && err.code === "STALE_AMOUNT" && err.nextBid === 11
+    );
+  });
+
+  test("console REST bids still work and are tagged CONSOLE", async () => {
+    const loser = ids.raceWinner === ids.teamA ? ids.teamC : ids.teamA;
+    // REST keeps allowing a jump above nextBid (no exact mode)
+    const res = await api("POST", `/auctions/${ids.auction}/bids`, { teamId: loser, amount: 12 });
+    assert.equal(res.status, 200, res.body.message);
+    assert.equal(res.body.data.auctionPlayer.currentBid, 12);
+    assert.equal(res.body.data.nextBid, 13);
+    assert.equal(res.body.data.bid.source, "CONSOLE");
+    ids.consoleLeader = loser;
+  });
+});

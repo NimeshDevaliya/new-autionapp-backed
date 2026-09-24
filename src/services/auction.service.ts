@@ -4,6 +4,7 @@ import { AuctionPlayer, IAuctionPlayer } from "../models/AuctionPlayer";
 import { Bid } from "../models/Bid";
 import { Team } from "../models/Team";
 import { TeamSquad } from "../models/TeamSquad";
+import { BidSource } from "../types/enums";
 import { ApiError } from "../utils/ApiError";
 
 /**
@@ -38,12 +39,45 @@ export function calculateNextBid(
   return currentBid + incrementFor(currentBid, tiers);
 }
 
+export const BID_ERROR_CODES = [
+  "NOT_LIVE",
+  "PAUSED",
+  "NO_CURRENT_PLAYER",
+  "TEAM_INACTIVE",
+  "TEAM_NOT_IN_TOURNAMENT",
+  "ALREADY_HIGHEST",
+  "STALE_AMOUNT",
+  "OUTBID",
+  "OVER_BUDGET",
+  "SQUAD_FULL",
+] as const;
+export type BidErrorCode = (typeof BID_ERROR_CODES)[number];
+
+/** An ApiError with a machine-readable code so the socket can tell clients why. */
+export class BidError extends ApiError {
+  constructor(
+    public readonly code: BidErrorCode,
+    statusCode: number,
+    message: string,
+    public readonly nextBid?: number
+  ) {
+    super(statusCode, message);
+  }
+}
+
 export interface PlaceBidInput {
   auctionId: string;
   teamId: string;
-  /** Optional explicit amount. When omitted the next legal bid is used. */
+  /** Explicit amount. When omitted the next legal bid is used. */
   amount?: number;
+  /**
+   * Team-app mode: the amount must equal the next legal bid exactly, so a tap
+   * meant for 42 can never land at 46.
+   */
+  exact?: boolean;
+  source?: BidSource;
   placedBy?: string;
+  placedByOwner?: string;
 }
 
 interface TeamBidState {
@@ -67,48 +101,60 @@ async function getTeamBidState(
 /**
  * Validates and records a bid. Every rule is enforced here, server-side — the
  * client is never trusted with budget or increment arithmetic.
+ *
+ * The write is a conditional update on the bid the caller saw, so two teams
+ * bidding in the same instant can never both succeed: the second one gets
+ * OUTBID with the fresh next amount.
  */
 export async function placeBid(input: PlaceBidInput) {
   const auction = await Auction.findById(input.auctionId);
   if (!auction) throw ApiError.notFound("Auction not found");
 
   if (auction.status === "PAUSED") {
-    throw ApiError.conflict("The auction is paused");
+    throw new BidError("PAUSED", 409, "The auction is paused");
   }
   if (auction.status !== "LIVE") {
-    throw ApiError.conflict("The auction is not live");
+    throw new BidError("NOT_LIVE", 409, "The auction is not live");
   }
   if (!auction.currentAuctionPlayer) {
-    throw ApiError.conflict("No player is currently under the hammer");
+    throw new BidError("NO_CURRENT_PLAYER", 409, "No player is currently under the hammer");
   }
 
   const auctionPlayer = await AuctionPlayer.findById(auction.currentAuctionPlayer);
   if (!auctionPlayer) throw ApiError.notFound("Current auction player not found");
 
   if (auctionPlayer.status === "SOLD") {
-    throw ApiError.conflict("This player has already been sold");
+    throw new BidError("NO_CURRENT_PLAYER", 409, "This player has already been sold");
   }
   if (auctionPlayer.status === "UNSOLD") {
-    throw ApiError.conflict("This player has been marked unsold");
+    throw new BidError("NO_CURRENT_PLAYER", 409, "This player has been marked unsold");
   }
   if (auctionPlayer.status !== "IN_AUCTION") {
-    throw ApiError.conflict("This player is not currently under the hammer");
+    throw new BidError(
+      "NO_CURRENT_PLAYER",
+      409,
+      "This player is not currently under the hammer"
+    );
   }
 
   const team = await Team.findById(input.teamId);
   if (!team) throw ApiError.notFound("Team not found");
   if (team.status !== "ACTIVE") {
-    throw ApiError.forbidden("This team is not active in the auction");
+    throw new BidError("TEAM_INACTIVE", 403, "This team is not active in the auction");
   }
   if (team.tournament.toString() !== auction.tournament.toString()) {
-    throw ApiError.badRequest("This team does not belong to the auction's tournament");
+    throw new BidError(
+      "TEAM_NOT_IN_TOURNAMENT",
+      400,
+      "This team does not belong to the auction's tournament"
+    );
   }
 
   if (
     auctionPlayer.currentBiddingTeam &&
     auctionPlayer.currentBiddingTeam.toString() === team._id.toString()
   ) {
-    throw ApiError.conflict("This team already holds the highest bid");
+    throw new BidError("ALREADY_HIGHEST", 409, "This team already holds the highest bid");
   }
 
   const nextBid = calculateNextBid(
@@ -116,12 +162,23 @@ export async function placeBid(input: PlaceBidInput) {
     auctionPlayer.currentBid,
     auction.bidIncrementTiers
   );
-
   const amount = input.amount ?? nextBid;
 
   if (amount < nextBid) {
-    throw ApiError.badRequest(
-      `Bid must be at least ${nextBid}. Received ${amount}.`
+    // the client saw an older state — someone else got there first
+    throw new BidError(
+      "OUTBID",
+      400,
+      `Bid must be at least ${nextBid}. Received ${amount}.`,
+      nextBid
+    );
+  }
+  if (input.exact && amount !== nextBid) {
+    throw new BidError(
+      "STALE_AMOUNT",
+      409,
+      `The next bid is ${nextBid}, not ${amount}.`,
+      nextBid
     );
   }
 
@@ -133,30 +190,65 @@ export async function placeBid(input: PlaceBidInput) {
   );
 
   if (squadCount >= team.maxPlayers || squadCount >= auction.maxSquadSize) {
-    throw ApiError.conflict(
-      `${team.name} has reached the maximum squad size`
-    );
+    throw new BidError("SQUAD_FULL", 409, `${team.name} has reached the maximum squad size`);
   }
-
   if (amount > remainingBudget) {
-    throw ApiError.conflict(
+    throw new BidError(
+      "OVER_BUDGET",
+      409,
       `${team.name} has insufficient budget. Remaining: ${remainingBudget}, bid: ${amount}.`
     );
   }
 
-  auctionPlayer.currentBid = amount;
-  auctionPlayer.currentBiddingTeam = team._id;
-  await auctionPlayer.save();
+  // Only succeeds if nobody changed the lot since we read it.
+  const updated = await AuctionPlayer.findOneAndUpdate(
+    {
+      _id: auctionPlayer._id,
+      status: "IN_AUCTION",
+      currentBid: auctionPlayer.currentBid,
+      currentBiddingTeam: { $ne: team._id },
+    },
+    { $set: { currentBid: amount, currentBiddingTeam: team._id } },
+    { new: true }
+  );
+
+  if (!updated) {
+    const fresh = await AuctionPlayer.findById(auctionPlayer._id);
+    if (!fresh || fresh.status !== "IN_AUCTION") {
+      throw new BidError("NO_CURRENT_PLAYER", 409, "This player is no longer under the hammer");
+    }
+    if (fresh.currentBiddingTeam?.toString() === team._id.toString()) {
+      throw new BidError("ALREADY_HIGHEST", 409, "This team already holds the highest bid");
+    }
+    const freshNext = calculateNextBid(
+      fresh.basePrice,
+      fresh.currentBid,
+      auction.bidIncrementTiers
+    );
+    throw new BidError(
+      "OUTBID",
+      409,
+      `Another team bid first. The next bid is ${freshNext}.`,
+      freshNext
+    );
+  }
 
   const bid = await Bid.create({
     auction: auction._id,
-    auctionPlayer: auctionPlayer._id,
+    auctionPlayer: updated._id,
     team: team._id,
     amount,
+    source: input.source ?? "CONSOLE",
     placedBy: input.placedBy,
+    placedByOwner: input.placedByOwner,
   });
 
-  return { auction, auctionPlayer, bid, team };
+  const nextAfter = calculateNextBid(
+    updated.basePrice,
+    updated.currentBid,
+    auction.bidIncrementTiers
+  );
+  return { auction, auctionPlayer: updated, bid, team, nextBid: nextAfter };
 }
 
 /**

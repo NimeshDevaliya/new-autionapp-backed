@@ -15,6 +15,7 @@ import {
 } from "../utils/apiResponse";
 import { asyncHandler } from "../utils/asyncHandler";
 import { broadcast } from "../sockets";
+import { bidPlacedPayload } from "../services/bid-events";
 import { AUCTION_EVENTS } from "../types/enums";
 import {
   calculateNextBid,
@@ -383,36 +384,19 @@ export const changeCurrentPlayer = asyncHandler(
 );
 
 export const placeBidHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { auction, auctionPlayer, bid, team } = await placeBid({
+  const result = await placeBid({
     auctionId: req.params.id,
     teamId: req.body.teamId,
     amount: req.body.amount,
+    source: "CONSOLE",
     placedBy: req.admin!.id,
   });
 
-  const nextBid = calculateNextBid(
-    auctionPlayer.basePrice,
-    auctionPlayer.currentBid,
-    auction.bidIncrementTiers
-  );
-
-  broadcast(String(auction._id), AUCTION_EVENTS.BID_PLACED, {
-    auctionPlayerId: auctionPlayer._id,
-    currentBid: auctionPlayer.currentBid,
-    nextBid,
-    team: {
-      _id: team._id,
-      name: team.name,
-      shortName: team.shortName,
-      logo: team.logo,
-      color: team.color,
-    },
-    bidId: bid._id,
-  });
+  broadcast(String(result.auction._id), AUCTION_EVENTS.BID_PLACED, bidPlacedPayload(result));
 
   return sendSuccess(
     res,
-    { auctionPlayer, bid, nextBid },
+    { auctionPlayer: result.auctionPlayer, bid: result.bid, nextBid: result.nextBid },
     "Bid placed successfully"
   );
 });
